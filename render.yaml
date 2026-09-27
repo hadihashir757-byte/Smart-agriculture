@@ -1,0 +1,24 @@
+# Render "Blueprint" - lets Render auto-configure this service instead of
+# you filling in build/start commands by hand. On render.com: New -> Blueprint
+# -> select this repo, and it reads this file automatically.
+#
+# You still have to set the two secret values yourself in Render's dashboard
+# after it's created (Render deliberately won't let secrets live in a file
+# that gets committed to git) - marked sync: false below.
+
+services:
+  - type: web
+    name: smart-agriculture-api
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn --chdir api app:app
+    envVars:
+      - key: API_KEY
+        sync: false          # set this yourself in the Render dashboard after creation
+      - key: OPENWEATHER_API_KEY
+        sync: false          # optional - leave unset if you don't have one yet
+      - key: LOCATION_LAT
+        sync: false          # optional
+      - key: LOCATION_LON
+        sync: false          # optional
