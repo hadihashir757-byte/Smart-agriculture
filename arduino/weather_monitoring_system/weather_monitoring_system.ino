@@ -228,6 +228,23 @@ unsigned long ignoreWritesUntil = 0;  // BLYNK_WRITE calls before this time are 
                                       // (Blynk can auto-resend a widget's last stored
                                       // value right after connecting; this filters that out)
 
+// AI-triggered run (from Flask's /get-recommendation): deliberately its own
+// state, separate from manualPumpOverride and the local burst/continuous
+// logic. Unlike a manual run, an AI-triggered run still respects the water
+// level safety cutoff (see the universal safety check in processIrrigation) -
+// no human is watching it, so the safety net has to stay in place. Unlike a
+// normal automatic burst, it doesn't participate in failedBursts/continuous-
+// mode escalation - the server already decided a specific duration.
+bool aiTriggeredActive   = false;
+unsigned long aiMaxOnTime = 0;
+
+// Cached from the last sendSensorData() call so syncWithServer() (which runs
+// on its own separate timer) can POST them without re-reading every sensor.
+float lastTempC      = NAN;
+float lastHumidityPct = NAN;
+int   lastLightPct    = 0;
+int   lastRainPct     = 0;
+
 // ---------------- Helper Functions ----------------
 
 int readAveraged(uint8_t pin) {
@@ -411,6 +428,24 @@ void processIrrigation() {
         manualPumpOverride = false;
         setPump(false, false);
         if (Blynk.connected()) Blynk.virtualWrite(V6, 0);
+      }
+      return;
+    }
+
+    // ----- AI-Triggered Run (from Flask's /get-recommendation) -----
+    // Note: this branch is only reached at all if the universal safety
+    // check above (water level / sensor fault) already passed, since this
+    // isn't manualPumpOverride - an AI-triggered run gets the same water
+    // safety protection as any other automatic run.
+    if (aiTriggeredActive) {
+      if (now - pumpStartTime >= aiMaxOnTime) {
+        Serial.println(">> AI-triggered run duration complete. Shutting off pump. <<");
+        aiTriggeredActive = false;
+        setPump(false, false);
+      } else if (!soilSensorOk) {
+        Serial.println(">> Soil sensor fault during AI-triggered run. Shutting off pump. <<");
+        aiTriggeredActive = false;
+        setPump(false, false);
       }
       return;
     }
@@ -605,27 +640,77 @@ void printRawValues() {
   Serial.print(" | Water distance: "); Serial.print(waterDist); Serial.println(" cm");
 }
 
-// ---------------- Flask/AI Server Sync (advisory only - see V10 note above) ----------------
+// ---------------- Flask/AI Server Sync ----------------
 //
-// The device sends all sensor data to Blynk directly (unchanged, above) - it
-// does NOT also send it to the Flask server. The Android phone posts photos
-// straight to Flask's /upload-image on its own, so the only thing this
-// device needs from the server is the resulting plant-health label, to show
-// on the Blynk dashboard alongside everything else. Irrigation stays fully
-// local and never depends on this call succeeding.
+// Two things happen here: (1) sensor readings get POSTed to Flask so it has
+// something to base a recommendation on, and (2) the resulting recommendation
+// is read back - the plant-health label goes straight to the Blynk dashboard
+// (V10, purely informational), but the irrigation.water/duration_sec fields
+// can actually START a watering run (see AI-Triggered Run in
+// processIrrigation()). That run still goes through all the same local
+// safety checks as any other automatic run - the water-level cutoff in
+// particular is NEVER bypassed here, unlike a manual run.
 //
 // Guarded the same way maintainConnection() already guards Blynk/WiFi
 // reconnects: never run while the pump is on, and never let the network
 // call block for long. Free-tier hosts (Render, etc.) can take 20-50s to
 // wake from sleep - without a short timeout, that would freeze this
 // single-threaded loop (and with it, water-level safety checks) for the
-// same duration. A bounded ~5s timeout means worst case we just miss this
-// sync cycle and try again next time, instead of risking a stuck safety loop.
+// same duration. A bounded ~5s timeout per call means worst case we just
+// miss this sync cycle and fall back to purely local soil-threshold
+// irrigation until the next one, instead of risking a stuck safety loop.
 
-void fetchPlantHealthFromServer() {
+void postSensorDataToServer() {
+  StaticJsonDocument<256> doc;
+  if (!isnan(lastTempC))      doc["temperature_c"] = lastTempC;
+  if (!isnan(lastHumidityPct)) doc["humidity_pct"] = lastHumidityPct;
+  doc["soil_pct"]    = lastSoilPct;
+  doc["light_pct"]   = lastLightPct;
+  doc["rain_pct"]    = lastRainPct;
+  doc["water_pct"]   = lastWaterPct;
+  doc["pump_status"] = isPumpOn ? 1 : 0;
+
+  String body;
+  serializeJson(doc, body);
+
   httpClient.setTimeout(SERVER_HTTP_TIMEOUT_MS);
   httpClient.beginRequest();
-  httpClient.get("/plant-health-status");
+  httpClient.post("/sensor-data");
+  httpClient.sendHeader("Content-Type", "application/json");
+  httpClient.sendHeader("X-API-Key", SERVER_API_KEY);
+  httpClient.sendHeader("Content-Length", body.length());
+  httpClient.beginBody();
+  httpClient.print(body);
+  httpClient.endRequest();
+
+  int statusCode = httpClient.responseStatusCode();
+  httpClient.responseBody();  // drain so the connection is clean for the next request
+  Serial.print("[server] POST /sensor-data -> ");
+  Serial.println(statusCode);
+}
+
+// Starts a local, safety-respecting watering run based on the server's
+// recommendation. Deliberately mirrors the guard conditions already used
+// for local auto-start (see the "Pump is OFF" section of processIrrigation)
+// rather than trusting the server's judgement alone - the server can say
+// "water", but the device still has the final say on whether it's safe to.
+void actOnRecommendation(bool aiWater, int aiDurationSec) {
+  if (!aiWater) return;
+  if (isPumpOn || manualPumpOverride || irrigationLockout) return;
+  if (!soilSensorOk || !waterSensorOk || lastWaterPct < LOW_WATER_THRESHOLD_PCT) return;
+
+  aiMaxOnTime = (unsigned long)constrain(aiDurationSec, 5, 120) * 1000UL;
+  aiTriggeredActive = true;
+  setPump(true, false);
+  Serial.print(">> AI-triggered watering started, duration: ");
+  Serial.print(aiMaxOnTime / 1000);
+  Serial.println("s <<");
+}
+
+void fetchRecommendationFromServer() {
+  httpClient.setTimeout(SERVER_HTTP_TIMEOUT_MS);
+  httpClient.beginRequest();
+  httpClient.get("/get-recommendation");
   httpClient.sendHeader("X-API-Key", SERVER_API_KEY);
   httpClient.endRequest();
 
@@ -633,26 +718,36 @@ void fetchPlantHealthFromServer() {
   String response = httpClient.responseBody();
 
   if (statusCode != 200) {
-    Serial.print("[server] GET /plant-health-status -> ");
+    Serial.print("[server] GET /get-recommendation -> ");
     Serial.println(statusCode);
     return;
   }
 
-  StaticJsonDocument<256> doc;
+  StaticJsonDocument<512> doc;
   DeserializationError err = deserializeJson(doc, response);
   if (err) {
-    Serial.print("[server] failed to parse plant-health JSON: ");
+    Serial.print("[server] failed to parse recommendation JSON: ");
     Serial.println(err.c_str());
     return;
   }
 
-  const char* label = doc["label"] | "unknown";
-
+  const char* label = "unknown";
+  if (!doc["plant_health"].isNull()) {
+    label = doc["plant_health"]["label"] | "unknown";
+  }
   if (Blynk.connected()) {
     Blynk.virtualWrite(V10, label);
   }
-  Serial.print("[server] Plant health: ");
-  Serial.println(label);
+
+  bool aiWater = doc["irrigation"]["water"] | false;
+  int aiDurationSec = doc["irrigation"]["duration_sec"] | 0;
+  const char* reason = doc["irrigation"]["reason"] | "";
+
+  Serial.print("[server] Plant health: "); Serial.print(label);
+  Serial.print(" | AI irrigation: "); Serial.print(aiWater ? "WATER" : "skip");
+  Serial.print(" (" ); Serial.print(reason); Serial.println(")");
+
+  actOnRecommendation(aiWater, aiDurationSec);
 }
 
 void syncWithServer() {
@@ -660,7 +755,8 @@ void syncWithServer() {
   if (WiFi.status() != WL_CONNECTED) return;
   if (String(SERVER_HOST).startsWith("YOUR-SERVER-HOST")) return;  // not deployed/configured yet
 
-  fetchPlantHealthFromServer();
+  postSensorDataToServer();
+  fetchRecommendationFromServer();
 }
 
 // ---------------- Telemetry Output ----------------
@@ -678,6 +774,15 @@ void sendSensorData() {
 
   bool dhtOk  = !(isnan(h) || isnan(t));
   bool online = Blynk.connected();
+
+  // Cache for syncWithServer(), which runs on its own separate timer and
+  // needs these same values without re-reading every sensor itself.
+  if (dhtOk) {
+    lastTempC = t;
+    lastHumidityPct = h;
+  }
+  lastLightPct = lightPct;
+  lastRainPct = rainPct;
 
   if (online) {
     Blynk.virtualWrite(V2, lightPct);
