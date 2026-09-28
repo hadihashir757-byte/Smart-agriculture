@@ -148,14 +148,20 @@ def upload_image():
     import numpy as np
     rgb_array = np.array(img)
 
+    quality_gate_disabled = os.environ.get("DISABLE_QUALITY_GATE", "false").lower() == "true"
     ok, reason, metrics = check_quality(rgb_array)
-    if not ok:
+    if not ok and not quality_gate_disabled:
         db.insert_plant_health_prediction(None, None, accepted=False, reject_reason=reason)
         return jsonify({
             "accepted": False,
             "reason": reason,
             "metrics": metrics,
         }), 200  # not a server error - just a rejected photo, retake and resend
+    if not ok and quality_gate_disabled:
+        # DEBUG MODE - quality gate bypassed via DISABLE_QUALITY_GATE env var.
+        # Remove that env var on Render once you're done testing to restore
+        # the normal blur/exposure rejection behavior.
+        print(f"[upload-image] quality gate would have rejected this ({reason}), but DISABLE_QUALITY_GATE is set")
 
     result = plant_health.predict(img)
 
