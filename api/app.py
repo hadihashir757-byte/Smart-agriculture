@@ -18,6 +18,7 @@ to requirements.txt for production) from inside the api/ directory, or just
 `python3 app.py` for a quick free-tier deploy - see README notes below.
 """
 
+import json
 import os
 import sys
 from functools import wraps
@@ -28,6 +29,7 @@ from PIL import Image
 sys.path.insert(0, os.path.dirname(__file__))
 import db  # noqa: E402
 import plant_health  # noqa: E402
+from growth_stage import plant_pixel_ratio, estimate_growth_stage  # noqa: E402
 from image_quality import check_quality  # noqa: E402
 from irrigation_rules import get_irrigation_recommendation  # noqa: E402
 from weather import get_rain_forecast_mm  # noqa: E402
@@ -80,6 +82,12 @@ def get_recommendation():
         return jsonify({"error": "no sensor data received yet"}), 404
 
     rain_forecast_mm = get_rain_forecast_mm()
+    plant_status = db.latest_accepted_plant_health()
+    # Prefer the image-derived growth stage (see growth_stage.py) over the
+    # sensor payload's plant_stage field, which is just a static default -
+    # this is the one place that's actually been observed from a photo.
+    plant_stage = (plant_status["growth_stage"] if plant_status and plant_status["growth_stage"]
+                   else latest["plant_stage"] or "mature")
 
     recommendation = get_irrigation_recommendation(
         soil_pct=latest["soil_pct"],
@@ -87,7 +95,7 @@ def get_recommendation():
         humidity_pct=latest["humidity_pct"],
         rain_forecast_mm=rain_forecast_mm,
         crop_type=latest["crop_type"] or "tomato",
-        plant_stage=latest["plant_stage"] or "mature",
+        plant_stage=plant_stage,
     )
 
     db.insert_irrigation_log(
@@ -96,14 +104,13 @@ def get_recommendation():
         reason=recommendation["reason"],
     )
 
-    plant_status = db.latest_accepted_plant_health()
-
     return jsonify({
         "irrigation": recommendation,
         "rain_forecast_mm": rain_forecast_mm,
         "plant_health": {
             "label": plant_health.prettify_label(plant_status["predicted_class"]),
             "confidence": plant_status["confidence"],
+            "growth_stage": plant_stage,
         } if plant_status else None,
     })
 
@@ -116,10 +123,12 @@ def plant_health_status():
     device - this is the only thing the device needs to pull from the server."""
     plant_status = db.latest_accepted_plant_health()
     if plant_status is None:
-        return jsonify({"label": "unknown", "confidence": None})
+        return jsonify({"label": "unknown", "confidence": None, "growth_stage": "unknown", "possible_diseases": []})
     return jsonify({
         "label": plant_health.prettify_label(plant_status["predicted_class"]),
         "confidence": plant_status["confidence"],
+        "growth_stage": plant_status["growth_stage"] or "unknown",
+        "possible_diseases": json.loads(plant_status["top_predictions"]) if plant_status["top_predictions"] else [],
     })
 
 
@@ -149,17 +158,31 @@ def upload_image():
 
     result = plant_health.predict(img)
 
+    # Growth stage: not a trained classifier (no labeled dataset exists for
+    # this), but a CV heuristic - see growth_stage.py for why this works
+    # specifically because the camera stays in a fixed position.
+    current_ratio = plant_pixel_ratio(rgb_array)
+    baseline = db.get_growth_baseline()
+    if baseline is None:
+        db.set_growth_baseline(current_ratio)
+        stage = "seedling"  # first-ever accepted photo defines the baseline
+    else:
+        stage = estimate_growth_stage(current_ratio, baseline["baseline_ratio"])
+
     is_confident = result["label"] != "uncertain"
     db.insert_plant_health_prediction(
         predicted_class=result["raw_class"] or "uncertain",
         confidence=result["confidence"],
         accepted=is_confident,
         reject_reason=None if is_confident else "low confidence",
+        growth_stage=stage,
+        top_predictions=result["top_predictions"],
     )
 
     return jsonify({
         "accepted": is_confident,
         "prediction": result,
+        "growth_stage": stage,
         "metrics": metrics,
     })
 

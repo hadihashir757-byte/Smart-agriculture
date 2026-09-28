@@ -9,6 +9,7 @@ history to survive restarts, point DB_PATH at a mounted persistent disk (paid
 tier) or periodically export to external storage.
 """
 
+import json
 import os
 import sqlite3
 import time
@@ -47,7 +48,15 @@ def init_db():
             predicted_class TEXT,
             confidence REAL,
             accepted INTEGER,      -- 0 if rejected by quality gate, 1 if a real prediction was made
-            reject_reason TEXT
+            reject_reason TEXT,
+            growth_stage TEXT,     -- 'seedling' or 'mature', see growth_stage.py
+            top_predictions TEXT   -- JSON list of [label, probability] for the top few diseases
+        );
+
+        CREATE TABLE IF NOT EXISTS growth_baseline (
+            id INTEGER PRIMARY KEY CHECK (id = 1),  -- single row, always id=1
+            baseline_ratio REAL NOT NULL,
+            set_at REAL NOT NULL
         );
 
         CREATE TABLE IF NOT EXISTS irrigation_log (
@@ -96,13 +105,15 @@ def latest_sensor_reading():
     return dict(row) if row else None
 
 
-def insert_plant_health_prediction(predicted_class, confidence, accepted, reject_reason=None):
+def insert_plant_health_prediction(predicted_class, confidence, accepted, reject_reason=None,
+                                    growth_stage=None, top_predictions=None):
     conn = get_connection()
     conn.execute(
         """INSERT INTO plant_health_predictions
-           (ts, predicted_class, confidence, accepted, reject_reason)
-           VALUES (?, ?, ?, ?, ?)""",
-        (time.time(), predicted_class, confidence, int(accepted), reject_reason),
+           (ts, predicted_class, confidence, accepted, reject_reason, growth_stage, top_predictions)
+           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+        (time.time(), predicted_class, confidence, int(accepted), reject_reason, growth_stage,
+         json.dumps(top_predictions) if top_predictions is not None else None),
     )
     conn.commit()
     conn.close()
@@ -116,6 +127,24 @@ def latest_accepted_plant_health():
     ).fetchone()
     conn.close()
     return dict(row) if row else None
+
+
+def get_growth_baseline():
+    conn = get_connection()
+    row = conn.execute("SELECT * FROM growth_baseline WHERE id = 1").fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def set_growth_baseline(ratio):
+    conn = get_connection()
+    conn.execute(
+        """INSERT INTO growth_baseline (id, baseline_ratio, set_at) VALUES (1, ?, ?)
+           ON CONFLICT(id) DO UPDATE SET baseline_ratio = excluded.baseline_ratio, set_at = excluded.set_at""",
+        (ratio, time.time()),
+    )
+    conn.commit()
+    conn.close()
 
 
 def insert_irrigation_log(water, duration_sec, reason):
