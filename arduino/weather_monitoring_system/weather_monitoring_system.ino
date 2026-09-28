@@ -189,11 +189,21 @@ const uint8_t       NUM_SAMPLES       = 10;
 // up to 7 datastreams per call (V0,V1,V2,V3,V4,V5,V9). At a 5-second interval
 // that's roughly 7 * (30*24*3600/5) =~ 3.6 MILLION messages/month - about 36x
 // over the free quota. None of these readings change fast enough to need
-// sub-minute dashboard updates anyway, so this is stretched out to keep
-// monthly usage safely under quota (~60,000 msgs/month at 7 writes/call)
-// while local pump/safety control (irrigationTask, waterLevelTask) keeps
-// running every 1-2s regardless, since those loops never touch Blynk at all.
-const unsigned long SEND_INTERVAL_MS  = 300000UL;   // 5 min (was 5s originally)
+// sub-minute dashboard updates during normal, day-to-day operation, so
+// REAL-WORLD mode stays slow enough to keep monthly usage safely under quota
+// (~60,000 msgs/month at 7 writes/call). But a slow dashboard makes for a
+// bad live demo - flipping the existing Demo Mode switch (V7) now also
+// speeds this up to every 5 seconds, same as it already does for the pump
+// burst/cooldown timings below. A demo only runs for minutes, not a full
+// month, so the quota risk from the fast interval is negligible as long as
+// you flip back to Real-World mode afterward. Local pump/safety control
+// (irrigationTask, waterLevelTask) is unaffected either way - those run
+// every 1-2s regardless and never touch Blynk directly.
+const unsigned long SEND_INTERVAL_REAL_MS = 300000UL;  // 5 min - safe for everyday/long-term operation
+const unsigned long SEND_INTERVAL_DEMO_MS = 5000UL;    // 5 sec - live demo, flip back afterward
+unsigned long sendInterval = SEND_INTERVAL_REAL_MS;
+int sendDataTimerId = -1;   // set in setup(), used by BLYNK_WRITE(V7) to retime this timer
+
 const unsigned long CHECK_INTERVAL_MS = 10000UL;
 
 DHT dht(DHTPIN, DHTTYPE);
@@ -522,13 +532,19 @@ BLYNK_WRITE(V7) {
     pumpCooldownTime = 5000UL;    // 5-second cooldown
     manualMaxOnTime  = 10000UL;   // 10-second manual run
     soilSmoothingAlpha = SOIL_SMOOTHING_ALPHA_DEMO;
+    sendInterval = SEND_INTERVAL_DEMO_MS;
     Serial.println(">> Switched to DEMO MODE (Fast timings - RED LED ON) <<");
   } else {
     pumpMaxOnTime    = 10000UL;   // 10-second burst
     pumpCooldownTime = 600000UL;  // 10-minute cooldown
     manualMaxOnTime  = 60000UL;   // 1-minute manual run
     soilSmoothingAlpha = SOIL_SMOOTHING_ALPHA_REAL;
+    sendInterval = SEND_INTERVAL_REAL_MS;
     Serial.println(">> Switched to REAL-WORLD MODE (GREEN LED ON) <<");
+  }
+
+  if (sendDataTimerId != -1) {
+    timer.changeInterval(sendDataTimerId, sendInterval);
   }
 
   updateModeLEDs();
@@ -691,8 +707,6 @@ void sendSensorData() {
   if (continuousMode) Serial.print(" [CONTINUOUS]");
   if (irrigationLockout) Serial.print(" [AUTO LOCKED]");
   Serial.println(online ? "" : "  [offline]");
-
-  syncWithServer();
 }
 
 // ---------------- Setup & Loop ----------------
@@ -749,7 +763,12 @@ void setup() {
   timer.setInterval(IRRIGATION_CHECK_MS, irrigationTask);
   timer.setInterval(WATER_CHECK_MS, waterLevelTask);
   timer.setInterval(CHECK_INTERVAL_MS, maintainConnection);
-  timer.setInterval(SEND_INTERVAL_MS, sendSensorData);
+  sendDataTimerId = timer.setInterval(sendInterval, sendSensorData);
+  // Server sync stays on its own fixed interval, independent of demo mode -
+  // no benefit to polling it faster during a demo (the plant-health label
+  // only changes when a new photo is analyzed), and it'd otherwise hammer
+  // the Flask server every 5s for no reason while demoing.
+  timer.setInterval(SEND_INTERVAL_REAL_MS, syncWithServer);
 }
 
 void loop() {
