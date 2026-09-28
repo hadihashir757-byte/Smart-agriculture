@@ -96,6 +96,7 @@ def get_recommendation():
         rain_forecast_mm=rain_forecast_mm,
         crop_type=latest["crop_type"] or "tomato",
         plant_stage=plant_stage,
+        water_pct=latest["water_pct"] if latest["water_pct"] is not None else 100,
     )
 
     db.insert_irrigation_log(

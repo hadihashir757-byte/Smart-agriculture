@@ -203,6 +203,9 @@ const unsigned long SEND_INTERVAL_REAL_MS = 300000UL;  // 5 min - safe for every
 const unsigned long SEND_INTERVAL_DEMO_MS = 5000UL;    // 5 sec - live demo, flip back afterward
 unsigned long sendInterval = SEND_INTERVAL_REAL_MS;
 int sendDataTimerId = -1;   // set in setup(), used by BLYNK_WRITE(V7) to retime this timer
+int syncTimerId = -1;       // same, but for the Flask server sync (AI-triggered irrigation) -
+                            // speeding this up in Demo Mode too, so a live demo doesn't mean
+                            // standing around for up to 5 real minutes waiting for a decision
 
 const unsigned long CHECK_INTERVAL_MS = 10000UL;
 
@@ -581,6 +584,12 @@ BLYNK_WRITE(V7) {
   if (sendDataTimerId != -1) {
     timer.changeInterval(sendDataTimerId, sendInterval);
   }
+  if (syncTimerId != -1) {
+    // Same interval as the Blynk send timer - fast in Demo Mode (5s) so
+    // the AI-triggered irrigation decision is visible live during a demo,
+    // slow in Real-World Mode (5min) to stay easy on the free-tier server.
+    timer.changeInterval(syncTimerId, sendInterval);
+  }
 
   updateModeLEDs();
   pushModeStatus();
@@ -869,11 +878,12 @@ void setup() {
   timer.setInterval(WATER_CHECK_MS, waterLevelTask);
   timer.setInterval(CHECK_INTERVAL_MS, maintainConnection);
   sendDataTimerId = timer.setInterval(sendInterval, sendSensorData);
-  // Server sync stays on its own fixed interval, independent of demo mode -
-  // no benefit to polling it faster during a demo (the plant-health label
-  // only changes when a new photo is analyzed), and it'd otherwise hammer
-  // the Flask server every 5s for no reason while demoing.
-  timer.setInterval(SEND_INTERVAL_REAL_MS, syncWithServer);
+  // Server sync now drives real AI-triggered irrigation, not just an
+  // informational label - so it follows the same demo-mode-aware interval
+  // as the Blynk send timer (5s in Demo Mode, 5min in Real-World Mode),
+  // otherwise a live demo would mean waiting up to 5 real minutes to see
+  // a watering decision happen.
+  syncTimerId = timer.setInterval(sendInterval, syncWithServer);
 }
 
 void loop() {
