@@ -42,6 +42,12 @@ if API_KEY == "dev-secret-change-me":
     print("!! WARNING: API_KEY not set in environment - using an insecure default. "
           "Set API_KEY before deploying anywhere public. !!")
 
+# TEMPORARY debug switch - set to False to confirm photos are reaching this
+# endpoint at all, separately from whether they pass the blur/exposure check.
+# Turn this back to True before the real demo - without it, blurry photos
+# produce confident-looking wrong diagnoses instead of being rejected.
+QUALITY_GATE_ENABLED = os.environ.get("QUALITY_GATE_ENABLED", "true").lower() != "false"
+
 
 def require_api_key(f):
     @wraps(f)
@@ -163,7 +169,7 @@ def upload_image():
     rgb_array = np.array(img)
 
     ok, reason, metrics = check_quality(rgb_array)
-    if not ok:
+    if QUALITY_GATE_ENABLED and not ok:
         db.insert_plant_health_prediction(None, None, accepted=False, reject_reason=reason)
         return jsonify({
             "accepted": False,
