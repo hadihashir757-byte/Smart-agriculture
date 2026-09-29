@@ -136,32 +136,40 @@ def plant_health_status():
 @app.route("/upload-image", methods=["POST"])
 @require_api_key
 def upload_image():
-    if "image" not in request.files:
-        return jsonify({"error": "expected multipart form field 'image'"}), 400
+    # Accepts two ways of sending the photo, since not every HTTP client
+    # (MacroDroid's HTTP Request action, for one) supports proper multipart
+    # form uploads:
+    #   1. multipart/form-data with the file under field name 'image'
+    #      (what curl -F, Postman, etc. send)
+    #   2. A raw image body - just the file's bytes as the entire POST body,
+    #      no wrapping at all (what MacroDroid's "File" content source sends)
+    import io
 
-    file = request.files["image"]
+    if "image" in request.files:
+        image_bytes = request.files["image"].stream.read()
+    else:
+        image_bytes = request.get_data()
+
+    if not image_bytes:
+        return jsonify({"error": "no image data received - send it as multipart field "
+                                  "'image' or as the raw request body"}), 400
+
     try:
-        img = Image.open(file.stream).convert("RGB")
+        img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
     except Exception:
         return jsonify({"error": "could not decode image"}), 400
 
     import numpy as np
     rgb_array = np.array(img)
 
-    quality_gate_disabled = os.environ.get("DISABLE_QUALITY_GATE", "false").lower() == "true"
     ok, reason, metrics = check_quality(rgb_array)
-    if not ok and not quality_gate_disabled:
+    if not ok:
         db.insert_plant_health_prediction(None, None, accepted=False, reject_reason=reason)
         return jsonify({
             "accepted": False,
             "reason": reason,
             "metrics": metrics,
         }), 200  # not a server error - just a rejected photo, retake and resend
-    if not ok and quality_gate_disabled:
-        # DEBUG MODE - quality gate bypassed via DISABLE_QUALITY_GATE env var.
-        # Remove that env var on Render once you're done testing to restore
-        # the normal blur/exposure rejection behavior.
-        print(f"[upload-image] quality gate would have rejected this ({reason}), but DISABLE_QUALITY_GATE is set")
 
     result = plant_health.predict(img)
 
