@@ -30,6 +30,12 @@
 //       This never controls the pump - all irrigation safety logic below is
 //       fully local and keeps working even if the server is unreachable,
 //       asleep (free-tier hosts sleep when idle), or returns garbage.
+//   V11 Summer Crop Switch (Integer, 0 or 1) - selects "tomato" as the
+//       current crop. Mutually exclusive with V12 (turning one on turns
+//       the other off). Sent to Flask with every sensor reading so the
+//       irrigation recommendation uses the right soil-moisture thresholds.
+//   V12 Winter Crop Switch (Integer, 0 or 1) - selects "amaranth" (Cheera),
+//       mutually exclusive with V11.
 //
 // View your dashboard at: https://blynk.cloud/dashboard/758759/global/devices/288049
 // (that link is just for you to open in a browser - it isn't used by the device)
@@ -208,6 +214,14 @@ int syncTimerId = -1;       // same, but for the Flask server sync (AI-triggered
                             // standing around for up to 5 real minutes waiting for a decision
 
 const unsigned long CHECK_INTERVAL_MS = 10000UL;
+
+// Crop type selector (V11 = "Summer Crop" i.e. tomato, V12 = "Winter Crop"
+// i.e. amaranth) - mutually exclusive switches: turning one on turns the
+// other off. Whatever is selected gets sent to Flask with every sensor
+// reading, which picks different soil-moisture thresholds for it (see
+// CROP_START_THRESHOLDS in irrigation_rules.py) - tomato tolerates drier
+// soil before watering, amaranth needs it kept more consistently moist.
+const char* currentCropType = "tomato";  // default until a switch is touched
 
 DHT dht(DHTPIN, DHTTYPE);
 BlynkTimer timer;
@@ -595,6 +609,32 @@ BLYNK_WRITE(V7) {
   pushModeStatus();
 }
 
+// Summer Crop Switch (V11) - tomato: full sun, tolerates drier soil before watering
+BLYNK_WRITE(V11) {
+  if (millis() < ignoreWritesUntil) return;
+
+  bool wantOn = (param.asInt() == 1);
+  if (!wantOn) return;  // ignore turning it off directly - switch to the other crop instead
+
+  currentCropType = "tomato";
+  Serial.println(">> Crop set to SUMMER (tomato) <<");
+
+  if (Blynk.connected()) Blynk.virtualWrite(V12, 0);  // mutually exclusive: force the other off
+}
+
+// Winter Crop Switch (V12) - amaranth: partial shade, needs consistently moist soil
+BLYNK_WRITE(V12) {
+  if (millis() < ignoreWritesUntil) return;
+
+  bool wantOn = (param.asInt() == 1);
+  if (!wantOn) return;  // ignore turning it off directly - switch to the other crop instead
+
+  currentCropType = "amaranth";
+  Serial.println(">> Crop set to WINTER (amaranth) <<");
+
+  if (Blynk.connected()) Blynk.virtualWrite(V11, 0);  // mutually exclusive: force the other off
+}
+
 // ---------------- Connection Management ----------------
 
 void maintainConnection() {
@@ -678,6 +718,7 @@ void postSensorDataToServer() {
   doc["rain_pct"]    = lastRainPct;
   doc["water_pct"]   = lastWaterPct;
   doc["pump_status"] = isPumpOn ? 1 : 0;
+  doc["crop_type"]   = currentCropType;
 
   String body;
   serializeJson(doc, body);

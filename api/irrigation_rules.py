@@ -33,7 +33,9 @@ CRITICAL_SOIL_PCT = 20
 # is coming. Seedlings have shallow roots and dry out faster, so they get a
 # higher (earlier) start point than mature plants.
 CROP_START_THRESHOLDS = {
-    "tomato":  {"seedling": 40, "mature": 30},
+    "tomato":  {"seedling": 40, "mature": 30},   # "summer" plant - full sun, tolerates drier soil
+    "amaranth": {"seedling": 55, "mature": 45},  # "winter" crop (Cheera) - common Kerala leafy green,
+                                                  # partial shade, needs consistently moist soil
     "pepper":  {"seedling": 35, "mature": 28},
     "default": {"seedling": 35, "mature": 30},
 }
