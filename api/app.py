@@ -5,6 +5,11 @@ Endpoints (all except /health require header:  X-API-Key: <API_KEY>):
   POST /sensor-data       <- Arduino posts current readings
   GET  /get-recommendation -> Arduino polls this for the irrigation decision
   POST /upload-image      <- Android posts a plant photo for health diagnosis
+  POST /demo-mode         <- Arduino posts {"enabled": bool} when the Demo Mode
+                             switch changes; pushes an instant notification to
+                             MacroDroid (best-effort) and updates stored state
+  GET  /demo-mode-status  -> MacroDroid's fallback poll - always the source of
+                             truth, in case the push above is ever missed
   GET  /health            <- no auth, for host uptime checks
 
 Run locally:
@@ -32,6 +37,7 @@ import plant_health  # noqa: E402
 from growth_stage import plant_pixel_ratio, estimate_growth_stage  # noqa: E402
 from image_quality import check_quality  # noqa: E402
 from irrigation_rules import get_irrigation_recommendation  # noqa: E402
+from macrodroid import notify_macrodroid  # noqa: E402
 from weather import get_rain_forecast_mm  # noqa: E402
 
 app = Flask(__name__)
@@ -131,6 +137,26 @@ def plant_health_status():
         "growth_stage": plant_status["growth_stage"] or "unknown",
         "possible_diseases": json.loads(plant_status["top_predictions"]) if plant_status["top_predictions"] else [],
     })
+
+
+@app.route("/demo-mode", methods=["POST"])
+@require_api_key
+def demo_mode():
+    payload = request.get_json(force=True, silent=True) or {}
+    enabled = bool(payload.get("enabled", False))
+
+    db.set_demo_mode(enabled)
+    notify_macrodroid(enabled)  # best-effort push - see macrodroid.py
+
+    return jsonify({"status": "stored", "demo_mode": enabled})
+
+
+@app.route("/demo-mode-status", methods=["GET"])
+@require_api_key
+def demo_mode_status():
+    """MacroDroid's fallback poll - always reflects the real stored state,
+    regardless of whether the push notification above ever arrived."""
+    return jsonify({"demo_mode": db.get_demo_mode()})
 
 
 @app.route("/upload-image", methods=["POST"])

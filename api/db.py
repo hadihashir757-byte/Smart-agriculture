@@ -66,6 +66,12 @@ def init_db():
             duration_sec INTEGER,
             reason TEXT
         );
+
+        CREATE TABLE IF NOT EXISTS app_state (
+            id INTEGER PRIMARY KEY CHECK (id = 1),  -- single row, always id=1
+            demo_mode INTEGER NOT NULL DEFAULT 0,
+            updated_at REAL NOT NULL
+        );
         """
     )
     conn.commit()
@@ -142,6 +148,24 @@ def set_growth_baseline(ratio):
         """INSERT INTO growth_baseline (id, baseline_ratio, set_at) VALUES (1, ?, ?)
            ON CONFLICT(id) DO UPDATE SET baseline_ratio = excluded.baseline_ratio, set_at = excluded.set_at""",
         (ratio, time.time()),
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_demo_mode():
+    conn = get_connection()
+    row = conn.execute("SELECT demo_mode FROM app_state WHERE id = 1").fetchone()
+    conn.close()
+    return bool(row["demo_mode"]) if row else False
+
+
+def set_demo_mode(enabled):
+    conn = get_connection()
+    conn.execute(
+        """INSERT INTO app_state (id, demo_mode, updated_at) VALUES (1, ?, ?)
+           ON CONFLICT(id) DO UPDATE SET demo_mode = excluded.demo_mode, updated_at = excluded.updated_at""",
+        (int(enabled), time.time()),
     )
     conn.commit()
     conn.close()
