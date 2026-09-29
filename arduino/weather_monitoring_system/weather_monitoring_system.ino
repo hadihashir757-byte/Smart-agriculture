@@ -607,6 +607,7 @@ BLYNK_WRITE(V7) {
 
   updateModeLEDs();
   pushModeStatus();
+  notifyServerDemoMode(demoMode);
 }
 
 // Summer Crop Switch (V11) - tomato: full sun, tolerates drier soil before watering
@@ -798,6 +799,39 @@ void fetchRecommendationFromServer() {
   Serial.print(" (" ); Serial.print(reason); Serial.println(")");
 
   actOnRecommendation(aiWater, aiDurationSec);
+}
+
+// Tells Flask the instant Demo Mode changes, so it can push a notification
+// to MacroDroid for near-instant photo-speed switching. This is a one-off
+// event, not a recurring poll - deliberately best-effort: if it fails
+// (no WiFi, pump running, server unreachable), MacroDroid's own fallback
+// poll (GET /demo-mode-status) still catches the change within ~10s
+// regardless, so a missed call here is never a real failure, just a
+// slightly slower reaction this one time.
+void notifyServerDemoMode(bool enabled) {
+  if (isPumpOn) return;
+  if (WiFi.status() != WL_CONNECTED) return;
+  if (String(SERVER_HOST).startsWith("YOUR-SERVER-HOST")) return;
+
+  StaticJsonDocument<64> doc;
+  doc["enabled"] = enabled;
+  String body;
+  serializeJson(doc, body);
+
+  httpClient.setTimeout(SERVER_HTTP_TIMEOUT_MS);
+  httpClient.beginRequest();
+  httpClient.post("/demo-mode");
+  httpClient.sendHeader("Content-Type", "application/json");
+  httpClient.sendHeader("X-API-Key", SERVER_API_KEY);
+  httpClient.sendHeader("Content-Length", body.length());
+  httpClient.beginBody();
+  httpClient.print(body);
+  httpClient.endRequest();
+
+  int statusCode = httpClient.responseStatusCode();
+  httpClient.responseBody();
+  Serial.print("[server] POST /demo-mode -> ");
+  Serial.println(statusCode);
 }
 
 void syncWithServer() {
