@@ -38,6 +38,7 @@ from growth_stage import plant_pixel_ratio, estimate_growth_stage  # noqa: E402
 from image_quality import check_quality  # noqa: E402
 from irrigation_rules import get_irrigation_recommendation  # noqa: E402
 from macrodroid import notify_macrodroid  # noqa: E402
+from plant_care_tips import get_care_tip  # noqa: E402
 from weather import get_rain_forecast_mm  # noqa: E402
 
 app = Flask(__name__)
@@ -118,6 +119,7 @@ def get_recommendation():
             "label": plant_health.prettify_label(plant_status["predicted_class"]),
             "confidence": plant_status["confidence"],
             "growth_stage": plant_stage,
+            "care_tip": get_care_tip(plant_status["predicted_class"]),
         } if plant_status else None,
     })
 
@@ -130,12 +132,14 @@ def plant_health_status():
     device - this is the only thing the device needs to pull from the server."""
     plant_status = db.latest_accepted_plant_health()
     if plant_status is None:
-        return jsonify({"label": "unknown", "confidence": None, "growth_stage": "unknown", "possible_diseases": []})
+        return jsonify({"label": "unknown", "confidence": None, "growth_stage": "unknown",
+                         "possible_diseases": [], "care_tip": None})
     return jsonify({
         "label": plant_health.prettify_label(plant_status["predicted_class"]),
         "confidence": plant_status["confidence"],
         "growth_stage": plant_status["growth_stage"] or "unknown",
         "possible_diseases": json.loads(plant_status["top_predictions"]) if plant_status["top_predictions"] else [],
+        "care_tip": get_care_tip(plant_status["predicted_class"]),
     })
 
 

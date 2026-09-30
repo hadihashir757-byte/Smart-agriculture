@@ -11,6 +11,7 @@ import joblib
 import numpy as np
 
 from feature_extraction import extract_features
+from plant_care_tips import get_care_tip
 
 MODEL_PATH = os.path.join(os.path.dirname(__file__), "..", "models", "plant_health_model.joblib")
 
@@ -40,6 +41,7 @@ def predict(rgb_image_array_or_path):
         "confidence": 0.0-1.0,
         "raw_class": "Tomato___Early_blight" or None,
         "top_predictions": [(label, prob), ...]  # top 3, for debugging/UI
+        "care_tip": "..." or None  # practical advice for this diagnosis, see plant_care_tips.py
       }
     """
     bundle = _load()
@@ -62,6 +64,7 @@ def predict(rgb_image_array_or_path):
             "confidence": best_prob,
             "raw_class": None,
             "top_predictions": top3,
+            "care_tip": None,
         }
 
     return {
@@ -69,4 +72,5 @@ def predict(rgb_image_array_or_path):
         "confidence": best_prob,
         "raw_class": best_class,
         "top_predictions": top3,
+        "care_tip": get_care_tip(best_class),
     }
