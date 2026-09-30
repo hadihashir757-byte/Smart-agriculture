@@ -11,19 +11,20 @@ doesn't depend on any trained model at all.
 
 GROWTH_TIPS = {
     "tomato": (
-        "Needs 6-8 hours of direct sunlight a day. Water deeply but less often - "
-        "letting the soil dry slightly between waterings encourages deeper, stronger "
-        "roots. Stake or cage the plant as it grows to support the fruit clusters, and "
-        "pinch off side shoots (suckers) for better fruit production. Keep watering "
-        "consistent once flowering starts - irregular watering during fruiting is the "
-        "most common cause of blossom end rot."
+        "Summer crop: less water, more sunlight. Needs 6-8 hours of direct sunlight a "
+        "day. Water deeply but less often - letting the soil dry slightly between "
+        "waterings encourages deeper, stronger roots. Stake or cage the plant as it "
+        "grows to support the fruit clusters, and pinch off side shoots (suckers) for "
+        "better fruit production. Keep watering consistent once flowering starts - "
+        "irregular watering during fruiting is the most common cause of blossom end rot."
     ),
     "amaranth": (
-        "Tolerates partial shade well - doesn't need full-day direct sun like tomato "
-        "does. Prefers consistently moist soil, so avoid letting it dry out completely "
-        "between waterings. Fast-growing leafy green - can often be harvested in cuts "
-        "(cut-and-come-again) within about 25-30 days. If seedlings come up densely, "
-        "thin them out so remaining plants have room for proper leaf growth."
+        "Winter crop: more water, less sunlight. Tolerates partial shade well - doesn't "
+        "need full-day direct sun like tomato does. Prefers consistently moist soil, so "
+        "avoid letting it dry out completely between waterings. Fast-growing leafy "
+        "green - can often be harvested in cuts (cut-and-come-again) within about "
+        "25-30 days. If seedlings come up densely, thin them out so remaining plants "
+        "have room for proper leaf growth."
     ),
 }
 
