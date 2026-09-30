@@ -201,11 +201,10 @@ def upload_image():
             "metrics": metrics,
         }), 200  # not a server error - just a rejected photo, retake and resend
 
-    result = plant_health.predict(img)
-
     # Growth stage: not a trained classifier (no labeled dataset exists for
     # this), but a CV heuristic - see growth_stage.py for why this works
-    # specifically because the camera stays in a fixed position.
+    # specifically because the camera stays in a fixed position. Crop-agnostic,
+    # so this runs regardless of which crop is currently selected.
     current_ratio = plant_pixel_ratio(rgb_array)
     baseline = db.get_growth_baseline()
     if baseline is None:
@@ -213,6 +212,34 @@ def upload_image():
         stage = "seedling"  # first-ever accepted photo defines the baseline
     else:
         stage = estimate_growth_stage(current_ratio, baseline["baseline_ratio"])
+
+    # Disease detection, unlike growth stage, IS crop-specific - the model was
+    # only ever trained on tomato (PlantVillage's tomato subset). Running it
+    # against a different crop (e.g. amaranth, selected via V12) wouldn't fail
+    # cleanly - it would force-fit the photo into one of the 10 tomato disease
+    # classes and hand back a confident, completely wrong diagnosis and care
+    # tip. Better to say "not supported" than to guess wrong.
+    latest_reading = db.latest_sensor_reading()
+    crop_type = ((latest_reading["crop_type"] if latest_reading and latest_reading["crop_type"] else "tomato")
+                 .lower())
+
+    if crop_type != "tomato":
+        db.insert_plant_health_prediction(
+            predicted_class=None,
+            confidence=None,
+            accepted=False,
+            reject_reason=f"disease detection not available for crop_type={crop_type}",
+            growth_stage=stage,
+        )
+        return jsonify({
+            "accepted": False,
+            "reason": f"Disease detection is currently only trained for tomato - "
+                      f"'{crop_type}' isn't supported yet.",
+            "growth_stage": stage,
+            "metrics": metrics,
+        })
+
+    result = plant_health.predict(img)
 
     is_confident = result["label"] != "uncertain"
     db.insert_plant_health_prediction(
