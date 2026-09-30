@@ -36,6 +36,7 @@ import db  # noqa: E402
 import plant_health  # noqa: E402
 from growth_stage import plant_pixel_ratio, estimate_growth_stage  # noqa: E402
 from image_quality import check_quality  # noqa: E402
+from crop_growth_tips import get_growth_tip  # noqa: E402
 from irrigation_rules import get_irrigation_recommendation  # noqa: E402
 from macrodroid import notify_macrodroid  # noqa: E402
 from plant_care_tips import get_care_tip  # noqa: E402
@@ -115,6 +116,7 @@ def get_recommendation():
     return jsonify({
         "irrigation": recommendation,
         "rain_forecast_mm": rain_forecast_mm,
+        "growth_tip": get_growth_tip(latest["crop_type"] or "tomato"),
         "plant_health": {
             "label": plant_health.prettify_label(plant_status["predicted_class"]),
             "confidence": plant_status["confidence"],
@@ -130,16 +132,21 @@ def plant_health_status():
     """Minimal endpoint for the Arduino: just the latest plant-health result,
     independent of any sensor data. Irrigation stays fully local on the
     device - this is the only thing the device needs to pull from the server."""
+    latest_reading = db.latest_sensor_reading()
+    crop_type = (latest_reading["crop_type"] if latest_reading and latest_reading["crop_type"] else "tomato")
+    growth_tip = get_growth_tip(crop_type)
+
     plant_status = db.latest_accepted_plant_health()
     if plant_status is None:
         return jsonify({"label": "unknown", "confidence": None, "growth_stage": "unknown",
-                         "possible_diseases": [], "care_tip": None})
+                         "possible_diseases": [], "care_tip": None, "growth_tip": growth_tip})
     return jsonify({
         "label": plant_health.prettify_label(plant_status["predicted_class"]),
         "confidence": plant_status["confidence"],
         "growth_stage": plant_status["growth_stage"] or "unknown",
         "possible_diseases": json.loads(plant_status["top_predictions"]) if plant_status["top_predictions"] else [],
         "care_tip": get_care_tip(plant_status["predicted_class"]),
+        "growth_tip": growth_tip,
     })
 
 
