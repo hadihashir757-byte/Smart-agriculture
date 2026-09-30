@@ -36,6 +36,12 @@
 //       irrigation recommendation uses the right soil-moisture thresholds.
 //   V12 Winter Crop Switch (Integer, 0 or 1) - selects "amaranth" (Cheera),
 //       mutually exclusive with V11.
+//   V13 Current Plant State (String) - growth stage from the server:
+//       "seedling" or "mature" (see growth_stage.py). Advisory only, like V10.
+//   V14 Care Tip (String) - practical advice for whatever V10 currently shows,
+//       e.g. what to do about an Early Blight diagnosis. Empty for tomato when
+//       healthy/uncertain, and always empty for non-tomato crops (no disease
+//       model exists for them yet - see /upload-image's crop_type check).
 //
 // View your dashboard at: https://blynk.cloud/dashboard/758759/global/devices/288049
 // (that link is just for you to open in a browser - it isn't used by the device)
@@ -774,7 +780,9 @@ void fetchRecommendationFromServer() {
     return;
   }
 
-  StaticJsonDocument<512> doc;
+  // 1024, not 512 - now also carries the care tip and irrigation reason
+  // strings, which can run a couple hundred characters each.
+  StaticJsonDocument<1024> doc;
   DeserializationError err = deserializeJson(doc, response);
   if (err) {
     Serial.print("[server] failed to parse recommendation JSON: ");
@@ -783,11 +791,17 @@ void fetchRecommendationFromServer() {
   }
 
   const char* label = "unknown";
+  const char* growthStage = "unknown";
+  const char* careTip = "";
   if (!doc["plant_health"].isNull()) {
     label = doc["plant_health"]["label"] | "unknown";
+    growthStage = doc["plant_health"]["growth_stage"] | "unknown";
+    careTip = doc["plant_health"]["care_tip"] | "";
   }
   if (Blynk.connected()) {
     Blynk.virtualWrite(V10, label);
+    Blynk.virtualWrite(V13, growthStage);  // Current Plant State (seedling/mature)
+    Blynk.virtualWrite(V14, careTip);      // Care Tip for the diagnosed condition
   }
 
   bool aiWater = doc["irrigation"]["water"] | false;
