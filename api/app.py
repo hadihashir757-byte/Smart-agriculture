@@ -60,7 +60,12 @@ QUALITY_GATE_ENABLED = os.environ.get("QUALITY_GATE_ENABLED", "true").lower() !=
 def require_api_key(f):
     @wraps(f)
     def wrapper(*args, **kwargs):
-        provided = request.headers.get("X-API-Key")
+        # Accepts the key via header (the normal/preferred way) OR as a
+        # ?api_key= query parameter - added as a fallback for HTTP clients
+        # that don't reliably send custom headers on certain request types
+        # (seen in practice with some MacroDroid HTTP Request configurations
+        # on POST-with-file-body uploads).
+        provided = request.headers.get("X-API-Key") or request.args.get("api_key")
         if provided != API_KEY:
             return jsonify({"error": "unauthorized"}), 401
         return f(*args, **kwargs)
