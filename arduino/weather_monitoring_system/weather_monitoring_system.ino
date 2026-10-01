@@ -85,6 +85,16 @@ WiFiSSLClient sslClient;
 HttpClient httpClient(sslClient, SERVER_HOST, 443);
 const unsigned long SERVER_HTTP_TIMEOUT_MS = 5000UL;  // bounded on purpose - see syncWithServer()
 
+// Shorter than SERVER_HTTP_TIMEOUT_MS on purpose: notifyServerDemoMode() runs
+// synchronously inside the BLYNK_WRITE(V7) handler, which blocks the entire
+// board (no sensor checks, no pump safety checks, nothing) until it returns.
+// A full 5s block right after flipping Demo Mode would make the switch feel
+// laggy even though the LED itself already changed instantly before this
+// call started. Since this notification is already best-effort (MacroDroid's
+// own poller catches a missed one within ~10-15s regardless), there's no
+// reason to risk a long block for it - fail fast instead.
+const unsigned long DEMO_NOTIFY_TIMEOUT_MS = 1200UL;
+
 // ---------------- Hardware Pins ----------------
 #define DHTPIN         2
 #define DHTTYPE        DHT11
@@ -834,7 +844,7 @@ void notifyServerDemoMode(bool enabled) {
   String body;
   serializeJson(doc, body);
 
-  httpClient.setTimeout(SERVER_HTTP_TIMEOUT_MS);
+  httpClient.setTimeout(DEMO_NOTIFY_TIMEOUT_MS);
   httpClient.beginRequest();
   httpClient.post("/demo-mode");
   httpClient.sendHeader("Content-Type", "application/json");
