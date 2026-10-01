@@ -39,9 +39,23 @@
 //   V13 Current Plant State (String) - growth stage from the server:
 //       "seedling" or "mature" (see growth_stage.py). Advisory only, like V10.
 //   V14 Care Tip (String) - practical advice for whatever V10 currently shows,
-//       e.g. what to do about an Early Blight diagnosis. Empty for tomato when
-//       healthy/uncertain, and always empty for non-tomato crops (no disease
-//       model exists for them yet - see /upload-image's crop_type check).
+//       e.g. what to do about an Early Blight or Sigatoka diagnosis. Both
+//       tomato and plantain have real trained models (see plant_health.py's
+//       MODEL_PATHS); empty if the result was uncertain or the crop has no
+//       model at all.
+//   V15 Fast Soil Smoothing Switch (Integer, 0 or 1) - independent of Demo
+//       Mode. ON = soil readings react fast (good for visibly demoing a
+//       change), OFF = slow/stable (default - what an actual automatic
+//       watering decision should be based on, so sensor noise doesn't cause
+//       jittery pump behavior).
+//   V16 Rain Forecast (Double, mm) - forecast rainfall over the next ~6h,
+//       from OpenWeatherMap via the server. 0 if not configured.
+//   V17 AI Irrigation Decision (String) - the actual reasoning behind the
+//       next watering action, e.g. "WATER (45s): Soil critically dry
+//       (15% < 20%) - watering regardless of forecast" or "SKIP: Rain
+//       forecast (8mm) covers watering need". Advisory only, like V10 -
+//       this is what already happened/will happen locally, not a remote
+//       control signal.
 //
 // View your dashboard at: https://blynk.cloud/dashboard/758759/global/devices/288049
 // (that link is just for you to open in a browser - it isn't used by the device)
@@ -600,18 +614,23 @@ BLYNK_WRITE(V7) {
 
   demoMode = (param.asInt() == 1);
 
+  // Note: soil smoothing speed is now controlled independently by V15, not
+  // tied to Demo Mode - see BLYNK_WRITE(V15) below. Fast smoothing makes
+  // soil changes visible quickly (good for showing off), but also lets
+  // sensor noise through more easily, which can make an actual automatic
+  // watering decision jittery. Keeping them separate means you can run Demo
+  // Mode's fast dashboard updates while still trusting a stable, de-noised
+  // soil reading for real irrigation decisions.
   if (demoMode) {
     pumpMaxOnTime    = 3000UL;    // 3-second burst
     pumpCooldownTime = 5000UL;    // 5-second cooldown
     manualMaxOnTime  = 10000UL;   // 10-second manual run
-    soilSmoothingAlpha = SOIL_SMOOTHING_ALPHA_DEMO;
     sendInterval = SEND_INTERVAL_DEMO_MS;
     Serial.println(">> Switched to DEMO MODE (Fast timings - RED LED ON) <<");
   } else {
     pumpMaxOnTime    = 10000UL;   // 10-second burst
     pumpCooldownTime = 600000UL;  // 10-minute cooldown
     manualMaxOnTime  = 60000UL;   // 1-minute manual run
-    soilSmoothingAlpha = SOIL_SMOOTHING_ALPHA_REAL;
     sendInterval = SEND_INTERVAL_REAL_MS;
     Serial.println(">> Switched to REAL-WORLD MODE (GREEN LED ON) <<");
   }
@@ -657,6 +676,19 @@ BLYNK_WRITE(V12) {
   Serial.println(">> Crop set to WINTER (plantain) <<");
 
   if (Blynk.connected()) Blynk.virtualWrite(V11, 0);  // mutually exclusive: force the other off
+}
+
+// Fast Soil Smoothing Switch (V15) - independent of Demo Mode on purpose
+// (see the note in BLYNK_WRITE(V7) above). ON = fast/noisy (good for a live
+// demo where you want to visibly show a soil change), OFF = slow/stable
+// (the default - what you want for an actual automatic watering decision).
+BLYNK_WRITE(V15) {
+  if (millis() < ignoreWritesUntil) return;
+
+  bool fastSmoothing = (param.asInt() == 1);
+  soilSmoothingAlpha = fastSmoothing ? SOIL_SMOOTHING_ALPHA_DEMO : SOIL_SMOOTHING_ALPHA_REAL;
+  Serial.println(fastSmoothing ? ">> Soil smoothing: FAST (demo visibility) <<"
+                                : ">> Soil smoothing: STABLE (default, for real decisions) <<");
 }
 
 // ---------------- Connection Management ----------------
@@ -815,17 +847,29 @@ void fetchRecommendationFromServer() {
     growthStage = doc["plant_health"]["growth_stage"] | "unknown";
     careTip = doc["plant_health"]["care_tip"] | "";
   }
+  bool aiWater = doc["irrigation"]["water"] | false;
+  int aiDurationSec = doc["irrigation"]["duration_sec"] | 0;
+  const char* reason = doc["irrigation"]["reason"] | "";
+  float rainForecastMm = doc["rain_forecast_mm"] | 0.0;
+
   if (Blynk.connected()) {
     Blynk.virtualWrite(V10, label);
     Blynk.virtualWrite(V13, growthStage);  // Current Plant State (seedling/mature)
     Blynk.virtualWrite(V14, careTip);      // Care Tip for the diagnosed condition
+    Blynk.virtualWrite(V16, rainForecastMm);  // Rain Forecast (mm, next ~6h)
+
+    // AI Irrigation Decision (V17) - the actual reasoning behind whatever the
+    // pump does next, not just the plant diagnosis. Build a short, readable
+    // summary string rather than writing the raw fields separately, so this
+    // reads as one line on the dashboard: e.g.
+    //   "WATER (45s): Soil critically dry (15% < 20%) - watering regardless of forecast"
+    String decision = aiWater ? "WATER (" + String(aiDurationSec) + "s): " : "SKIP: ";
+    decision += reason;
+    Blynk.virtualWrite(V17, decision);
   }
 
-  bool aiWater = doc["irrigation"]["water"] | false;
-  int aiDurationSec = doc["irrigation"]["duration_sec"] | 0;
-  const char* reason = doc["irrigation"]["reason"] | "";
-
   Serial.print("[server] Plant health: "); Serial.print(label);
+  Serial.print(" | Rain forecast: "); Serial.print(rainForecastMm); Serial.print("mm");
   Serial.print(" | AI irrigation: "); Serial.print(aiWater ? "WATER" : "skip");
   Serial.print(" (" ); Serial.print(reason); Serial.println(")");
 
