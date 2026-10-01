@@ -1,12 +1,17 @@
-"""OpenWeatherMap wrapper for rain forecast lookup.
+"""Open-Meteo wrapper for rain forecast lookup.
 
-Degrades gracefully: if OPENWEATHER_API_KEY / LOCATION_LAT / LOCATION_LON
-aren't set, or the request fails for any reason (network, quota, bad key),
-this returns 0mm forecast rather than raising - the irrigation decision then
-just falls back to soil-moisture-only logic instead of crashing the endpoint.
-0mm is the safe default: worst case you water when rain was actually coming
-(wastes some water), never the other way around (silently skipping a needed
-watering because of a weather API outage).
+Uses Open-Meteo (open-meteo.com) instead of OpenWeatherMap - genuinely free,
+no API key at all, no signup, no multi-hour key-activation wait, works the
+instant you have coordinates. Up to 10,000 calls/day on the free tier, far
+more than this project needs.
+
+Degrades gracefully: if LOCATION_LAT / LOCATION_LON aren't set, or the
+request fails for any reason (network, outage), this returns 0mm forecast
+rather than raising - the irrigation decision then just falls back to
+soil-moisture-only logic instead of crashing the endpoint. 0mm is the safe
+default: worst case you water when rain was actually coming (wastes some
+water), never the other way around (silently skipping a needed watering
+because of a weather API outage).
 """
 
 import os
@@ -14,8 +19,7 @@ import time
 
 import requests
 
-_CACHE_TTL_SEC = 900  # 15 min - free OpenWeatherMap tier allows ~1000 calls/day,
-                       # no need to call it on every /get-recommendation hit
+_CACHE_TTL_SEC = 900  # 15 min - no real need to call it more often than this
 _cache = {"ts": 0, "rain_mm": 0.0}
 
 
@@ -24,26 +28,38 @@ def get_rain_forecast_mm():
     if now - _cache["ts"] < _CACHE_TTL_SEC:
         return _cache["rain_mm"]
 
-    api_key = os.environ.get("OPENWEATHER_API_KEY")
     lat = os.environ.get("LOCATION_LAT")
     lon = os.environ.get("LOCATION_LON")
 
-    if not (api_key and lat and lon):
+    if not (lat and lon):
         return 0.0
 
     try:
         resp = requests.get(
-            "https://api.openweathermap.org/data/2.5/forecast",
-            params={"lat": lat, "lon": lon, "appid": api_key, "units": "metric"},
+            "https://api.open-meteo.com/v1/forecast",
+            params={
+                "latitude": lat,
+                "longitude": lon,
+                "hourly": "precipitation",
+                "forecast_days": 1,
+                "timezone": "auto",
+            },
             timeout=5,
         )
         resp.raise_for_status()
         data = resp.json()
 
-        # Sum forecast rain volume over the next 2 x 3-hour blocks (~6h ahead)
-        rain_mm = 0.0
-        for block in data.get("list", [])[:2]:
-            rain_mm += block.get("rain", {}).get("3h", 0.0)
+        # Sum the next 6 hourly precipitation values (mm) starting from now -
+        # same "~6h ahead" window the irrigation logic was already designed
+        # around. Open-Meteo returns a full day's hourly timestamps; find the
+        # current hour's index and sum forward from there.
+        times = data.get("hourly", {}).get("time", [])
+        precip = data.get("hourly", {}).get("precipitation", [])
+
+        now_hour_str = time.strftime("%Y-%m-%dT%H:00", time.localtime(now))
+        start_idx = times.index(now_hour_str) if now_hour_str in times else 0
+
+        rain_mm = sum(precip[start_idx:start_idx + 6])
 
         _cache["ts"] = now
         _cache["rain_mm"] = rain_mm
