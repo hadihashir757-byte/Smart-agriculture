@@ -156,7 +156,12 @@ const int SOIL_FAULT_MARGIN = 100;
 // with an exponential moving average instead of using the raw reading directly.
 // Lower = smoother/slower to react to real changes, higher = faster/noisier.
 const float SOIL_SMOOTHING_ALPHA_REAL = 0.15;  // ~20s to settle - normal operation
-const float SOIL_SMOOTHING_ALPHA_DEMO = 0.10;  // steadier than real-world, but still catches up in time for the 3s demo burst
+// Demo Mode needs to react FAST, not slow - the whole point is showing a
+// visible change (dip the sensor in water, see it respond) within seconds,
+// not over the ~20-30s the real-world value is tuned for. 0.6 reaches ~94%
+// of a dramatic change within 3 one-second ticks - fast enough to be obvious
+// live, and still well within the 3s demo burst window.
+const float SOIL_SMOOTHING_ALPHA_DEMO = 0.6;
 
 // ---------------- Water Tank Level Settings (HC-SR04) ----------------
 // Distance from the sensor to the water surface when the tank is EMPTY
