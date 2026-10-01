@@ -62,6 +62,35 @@ CARE_TIPS = {
         "No problem detected - keep up the current watering and care routine, and "
         "keep an eye out for early signs of pests or disease."
     ),
+
+    # Plantain/banana - from the BananaLSD dataset, raw class names are plain
+    # (no "Tomato___"-style prefix since this dataset only covers one crop).
+    "cordana": (
+        "Fungal leaf spot (Cordana musae) - usually a secondary issue that shows up on "
+        "already-stressed or physically damaged leaves rather than attacking healthy "
+        "tissue directly. Remove affected leaves, avoid injuring the leaves when working "
+        "around the plant, and improve overall plant nutrition/vigor - healthy plants "
+        "rarely get a serious infection from this one."
+    ),
+    "sigatoka": (
+        "One of the most serious banana diseases worldwide - causes streaking and "
+        "spotting that spreads and can significantly reduce fruit yield if left "
+        "unchecked. Remove and destroy severely affected leaves to cut down on spore "
+        "spread, avoid overhead watering, and make sure plants have good spacing and "
+        "airflow between them. Consider a fungicide if it keeps progressing - this is "
+        "not a 'wait and see' disease."
+    ),
+    "pestalotiopsis": (
+        "Fungal leaf spot/blight - grey-brown spots with dark borders, often linked to "
+        "physical damage to the leaf or poor drainage around the roots. Remove affected "
+        "leaves, avoid mechanical damage when handling the plant, and check that the "
+        "soil isn't staying waterlogged."
+    ),
+    "healthy": (
+        "No problem detected - keep up the current watering and care routine, and keep "
+        "an eye out for early leaf spotting, which is the first sign of most banana leaf "
+        "diseases."
+    ),
 }
 
 DEFAULT_TIP = "No specific guidance available for this result - monitor the plant and consider consulting a local expert if symptoms worsen."

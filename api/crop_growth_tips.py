@@ -2,11 +2,10 @@
 General growth/care tips per crop type - independent of disease diagnosis.
 
 Unlike plant_care_tips.py (which only applies once a specific disease has
-been diagnosed, and only exists for tomato since that's the only trained
-model), this is just practical growing advice for whichever crop is
-currently selected (see the V11/V12 switches on the Arduino) - useful even
-when nothing is wrong with the plant, and works for amaranth too since it
-doesn't depend on any trained model at all.
+been diagnosed, and only exists for crops with a trained model), this is
+just practical growing advice for whichever crop is currently selected (see
+the V11/V12 switches on the Arduino) - useful even when nothing is wrong
+with the plant, and doesn't depend on any trained model at all.
 """
 
 GROWTH_TIPS = {
@@ -18,13 +17,14 @@ GROWTH_TIPS = {
         "better fruit production. Keep watering consistent once flowering starts - "
         "irregular watering during fruiting is the most common cause of blossom end rot."
     ),
-    "amaranth": (
-        "Winter crop: more water, less sunlight. Tolerates partial shade well - doesn't "
-        "need full-day direct sun like tomato does. Prefers consistently moist soil, so "
-        "avoid letting it dry out completely between waterings. Fast-growing leafy "
-        "green - can often be harvested in cuts (cut-and-come-again) within about "
-        "25-30 days. If seedlings come up densely, thin them out so remaining plants "
-        "have room for proper leaf growth."
+    "plantain": (
+        "Winter crop: more water. One honest correction to the usual 'less sunlight' "
+        "framing - plantain actually prefers full sun, same as tomato; what sets it "
+        "apart is its heavy, constant water need, not shade tolerance. Keep soil "
+        "consistently moist - never let it dry out, unlike tomato. Remove dried/dead "
+        "leaves regularly, and keep suckers (side shoots at the base) thinned to one or "
+        "two at a time so the main plant isn't competing with its own offshoots for "
+        "water and nutrients."
     ),
 }
 

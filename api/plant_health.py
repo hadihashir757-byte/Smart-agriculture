@@ -1,8 +1,13 @@
-"""Plant Health inference: loads the trained model once and exposes predict().
+"""Plant Health inference: loads the trained model(s) once and exposes predict().
 
-See train_plant_health.py for how plant_health_model.joblib was produced
-(hand-crafted color/texture features -> HistGradientBoostingClassifier,
-trained on the tomato subset of PlantVillage).
+Two independent models now, one per crop with a trained disease classifier:
+  - tomato: see train_plant_health.py (PlantVillage tomato subset, 96.5% test acc)
+  - plantain: see train_plant_health_plantain.py (BananaLSD dataset, 95.2% test acc)
+Both use the same hand-crafted color/texture features (feature_extraction.py)
+and the same HistGradientBoostingClassifier approach - only the training data
+differs. A crop with no trained model (anything not in MODEL_PATHS) simply
+isn't supported - see /upload-image's crop_type check in app.py, which
+declines rather than guessing with the wrong model.
 """
 
 import os
@@ -13,27 +18,37 @@ import numpy as np
 from feature_extraction import extract_features
 from plant_care_tips import get_care_tip
 
-MODEL_PATH = os.path.join(os.path.dirname(__file__), "..", "models", "plant_health_model.joblib")
+MODEL_PATHS = {
+    "tomato": os.path.join(os.path.dirname(__file__), "..", "models", "plant_health_model.joblib"),
+    "plantain": os.path.join(os.path.dirname(__file__), "..", "models", "plant_health_model_plantain.joblib"),
+}
 
 CONFIDENCE_THRESHOLD = 0.55  # below this, report "uncertain" instead of a guess
 
-_model_bundle = None
+_model_bundles = {}  # crop_type -> loaded bundle, cached after first use
 
 
-def _load():
-    global _model_bundle
-    if _model_bundle is None:
-        _model_bundle = joblib.load(MODEL_PATH)
-    return _model_bundle
+def supported_crop(crop_type):
+    return (crop_type or "").lower() in MODEL_PATHS
+
+
+def _load(crop_type):
+    crop_type = crop_type.lower()
+    if crop_type not in _model_bundles:
+        path = MODEL_PATHS[crop_type]  # raises KeyError for an unsupported crop - caller should check supported_crop() first
+        _model_bundles[crop_type] = joblib.load(path)
+    return _model_bundles[crop_type]
 
 
 def prettify_label(raw_label):
-    # "Tomato___Early_blight" -> "Early blight"
+    # "Tomato___Early_blight" -> "Early blight". Plantain's classes have no
+    # "___" prefix at all (e.g. "sigatoka"), so this just passes them through
+    # unchanged aside from the underscore->space cleanup.
     name = raw_label.split("___", 1)[-1]
     return name.replace("_", " ").strip()
 
 
-def predict(rgb_image_array_or_path):
+def predict(rgb_image_array_or_path, crop_type="tomato"):
     """
     Returns dict:
       {
@@ -44,7 +59,7 @@ def predict(rgb_image_array_or_path):
         "care_tip": "..." or None  # practical advice for this diagnosis, see plant_care_tips.py
       }
     """
-    bundle = _load()
+    bundle = _load(crop_type)
     clf = bundle["model"]
 
     features = extract_features(rgb_image_array_or_path).reshape(1, -1)

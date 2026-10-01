@@ -220,17 +220,17 @@ def upload_image():
     else:
         stage = estimate_growth_stage(current_ratio, baseline["baseline_ratio"])
 
-    # Disease detection, unlike growth stage, IS crop-specific - the model was
-    # only ever trained on tomato (PlantVillage's tomato subset). Running it
-    # against a different crop (e.g. amaranth, selected via V12) wouldn't fail
-    # cleanly - it would force-fit the photo into one of the 10 tomato disease
-    # classes and hand back a confident, completely wrong diagnosis and care
-    # tip. Better to say "not supported" than to guess wrong.
+    # Disease detection, unlike growth stage, IS crop-specific - each model
+    # only knows the crop it was trained on (see plant_health.MODEL_PATHS).
+    # Running tomato's model against a different crop wouldn't fail cleanly -
+    # it would force-fit the photo into one of ITS classes and hand back a
+    # confident, completely wrong diagnosis. Better to say "not supported"
+    # than to guess with the wrong model.
     latest_reading = db.latest_sensor_reading()
     crop_type = ((latest_reading["crop_type"] if latest_reading and latest_reading["crop_type"] else "tomato")
                  .lower())
 
-    if crop_type != "tomato":
+    if not plant_health.supported_crop(crop_type):
         db.insert_plant_health_prediction(
             predicted_class=None,
             confidence=None,
@@ -240,13 +240,13 @@ def upload_image():
         )
         return jsonify({
             "accepted": False,
-            "reason": f"Disease detection is currently only trained for tomato - "
-                      f"'{crop_type}' isn't supported yet.",
+            "reason": f"Disease detection isn't available for '{crop_type}' yet - "
+                      f"supported crops: {', '.join(sorted(plant_health.MODEL_PATHS))}.",
             "growth_stage": stage,
             "metrics": metrics,
         })
 
-    result = plant_health.predict(img)
+    result = plant_health.predict(img, crop_type=crop_type)
 
     is_confident = result["label"] != "uncertain"
     db.insert_plant_health_prediction(
