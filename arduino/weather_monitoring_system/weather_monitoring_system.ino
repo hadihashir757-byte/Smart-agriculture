@@ -34,7 +34,7 @@
 //       current crop. Mutually exclusive with V12 (turning one on turns
 //       the other off). Sent to Flask with every sensor reading so the
 //       irrigation recommendation uses the right soil-moisture thresholds.
-//   V12 Winter Crop Switch (Integer, 0 or 1) - selects "amaranth" (Cheera),
+//   V12 Winter Crop Switch (Integer, 0 or 1) - selects "plantain",
 //       mutually exclusive with V11.
 //   V13 Current Plant State (String) - growth stage from the server:
 //       "seedling" or "mature" (see growth_stage.py). Advisory only, like V10.
@@ -222,11 +222,11 @@ int syncTimerId = -1;       // same, but for the Flask server sync (AI-triggered
 const unsigned long CHECK_INTERVAL_MS = 10000UL;
 
 // Crop type selector (V11 = "Summer Crop" i.e. tomato, V12 = "Winter Crop"
-// i.e. amaranth) - mutually exclusive switches: turning one on turns the
+// i.e. plantain) - mutually exclusive switches: turning one on turns the
 // other off. Whatever is selected gets sent to Flask with every sensor
 // reading, which picks different soil-moisture thresholds for it (see
 // CROP_START_THRESHOLDS in irrigation_rules.py) - tomato tolerates drier
-// soil before watering, amaranth needs it kept more consistently moist.
+// soil before watering, plantain needs it kept more consistently moist.
 const char* currentCropType = "tomato";  // default until a switch is touched
 
 DHT dht(DHTPIN, DHTTYPE);
@@ -629,15 +629,17 @@ BLYNK_WRITE(V11) {
   if (Blynk.connected()) Blynk.virtualWrite(V12, 0);  // mutually exclusive: force the other off
 }
 
-// Winter Crop Switch (V12) - amaranth: partial shade, needs consistently moist soil
+// Winter Crop Switch (V12) - plantain: full sun like tomato, but needs
+// heavy, consistently moist soil - that's the "winter" distinction here,
+// not shade tolerance
 BLYNK_WRITE(V12) {
   if (millis() < ignoreWritesUntil) return;
 
   bool wantOn = (param.asInt() == 1);
   if (!wantOn) return;  // ignore turning it off directly - switch to the other crop instead
 
-  currentCropType = "amaranth";
-  Serial.println(">> Crop set to WINTER (amaranth) <<");
+  currentCropType = "plantain";
+  Serial.println(">> Crop set to WINTER (plantain) <<");
 
   if (Blynk.connected()) Blynk.virtualWrite(V11, 0);  // mutually exclusive: force the other off
 }
