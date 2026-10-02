@@ -48,8 +48,11 @@
 //       change), OFF = slow/stable (default - what an actual automatic
 //       watering decision should be based on, so sensor noise doesn't cause
 //       jittery pump behavior).
-//   V16 Rain Forecast (Double, mm) - forecast rainfall over the next ~6h,
-//       from OpenWeatherMap via the server. 0 if not configured.
+//   V16 Weather (String) - a short condition line, e.g. "Rainy - P:80%"
+//       (condition + rain probability %, from Open-Meteo via the server).
+//       The actual irrigation skip-threshold still runs on forecasted mm
+//       underneath - this is just the human-readable display. "Unknown -
+//       P:0%" if location isn't configured on the server.
 //   V17 AI Irrigation Decision (String) - the actual reasoning behind the
 //       next watering action, e.g. "WATER (45s): Soil critically dry
 //       (15% < 20%) - watering regardless of forecast" or "SKIP: Rain
@@ -89,6 +92,14 @@
 #include <DHT.h>
 #include <ArduinoHttpClient.h>
 #include <ArduinoJson.h>
+// Stands in for the LCD screen we don't have - the UNO R4 WiFi's built-in
+// 12x8 LED matrix. ArduinoGraphics.h must be included BEFORE Arduino_LED_Matrix.h,
+// and MATRIX_WITH_ARDUINOGRAPHICS defined by hand: that header normally detects
+// ArduinoGraphics itself via __has_include, but that check can't see it from
+// inside this toolchain's sketch build-cache folder, so it has to be forced.
+#include "ArduinoGraphics.h"
+#define MATRIX_WITH_ARDUINOGRAPHICS
+#include "Arduino_LED_Matrix.h"
 
 // ---------------- WiFi Credentials (from secrets.h) ----------------
 char ssid[] = WIFI_SSID;
@@ -184,6 +195,13 @@ const float SOIL_SMOOTHING_ALPHA_DEMO = 0.6;
 const int TANK_EMPTY_DISTANCE_CM = 30;  // *** placeholder - measure & replace ***
 const int TANK_FULL_DISTANCE_CM  = 3;   // *** placeholder - measure & replace ***
 
+// Buzzer and Tank Full LED trigger directly off the raw sensor distance
+// (not the % above), measured and set by hand: the buzzer starts once the
+// sensor reads 22cm or more from the water surface, and the Full LED lights
+// once it reads 5cm or less.
+const int LOW_WATER_BUZZER_CM = 22;
+const int TANK_FULL_LED_CM    = 5;
+
 // Below this water level %, the pump will not start (manual or automatic),
 // and any pump already running is stopped immediately. This protects the
 // pump from running dry when the reservoir empties.
@@ -260,6 +278,13 @@ const char* currentCropType = "tomato";  // default until a switch is touched
 
 DHT dht(DHTPIN, DHTTYPE);
 BlynkTimer timer;
+ArduinoLEDMatrix matrix;
+
+// Cycles one sensor reading at a time across the matrix (it's only 12 LEDs
+// wide, so anything longer than ~2 characters has to scroll rather than sit
+// still - short labels keep each one readable before the next starts).
+const unsigned long MATRIX_CYCLE_MS = 6000UL;
+int matrixReadingIndex = 0;
 
 // System States
 bool isPumpOn           = false;
@@ -392,7 +417,7 @@ void waterLevelTask() {
   Serial.println(waterSensorOk ? "yes" : "NO");
 
   // ----- Low water buzzer -----
-  bool lowWater = !waterSensorOk || lastWaterPct < LOW_WATER_THRESHOLD_PCT;
+  bool lowWater = !waterSensorOk || distanceCM >= LOW_WATER_BUZZER_CM;
   digitalWrite(BUZZER_PIN, lowWater ? HIGH : LOW);
   if (lowWater != lowWaterAlertOn) {
     lowWaterAlertOn = lowWater;
@@ -401,7 +426,7 @@ void waterLevelTask() {
   }
 
   // ----- Tank full LED -----
-  bool tankFull = waterSensorOk && lastWaterPct >= TANK_FULL_THRESHOLD_PCT;
+  bool tankFull = waterSensorOk && distanceCM <= TANK_FULL_LED_CM;
   digitalWrite(FULL_LED_PIN, tankFull ? HIGH : LOW);
   if (tankFull != tankFullOn) {
     tankFullOn = tankFull;
@@ -426,6 +451,42 @@ void pushModeStatus() {
   if (Blynk.connected()) {
     Blynk.virtualWrite(V8, demoMode ? "DEMO MODE" : "REAL-WORLD MODE");
   }
+}
+
+// ---------------- LED Matrix Display ----------------
+// Stands in for the LCD screen the hardware doesn't have. Starts one scroll
+// animation and returns immediately - the matrix keeps scrolling it in the
+// background on its own, so this doesn't block Blynk.run()/timer.run() the
+// way a long synchronous call would (see the Demo Mode notify timeout fix
+// above for why that matters on this board).
+void showOnMatrix(const char *text) {
+  matrix.beginDraw();
+  matrix.stroke(0xFFFFFFFF);
+  matrix.textScrollSpeed(120);
+  matrix.textFont(Font_5x7);
+  matrix.beginText(0, 1, 0xFFFFFF);
+  matrix.println(text);
+  matrix.endText(SCROLL_LEFT);
+  matrix.endDraw();
+}
+
+// Short labels so each one is quick to read while scrolling across just 12
+// LEDs: T=temperature, H=humidity, S=soil moisture, L=light, R=rain sensor,
+// W=water tank level. Cycles through the same cached values the dashboard
+// and server sync already use (see "Cached from the last sendSensorData()"
+// above) - no extra sensor reads here.
+void cycleMatrixReading() {
+  char buf[16];
+  switch (matrixReadingIndex) {
+    case 0: snprintf(buf, sizeof(buf), "T:%.1fC", lastTempC); break;
+    case 1: snprintf(buf, sizeof(buf), "H:%d%%", (int)lastHumidityPct); break;
+    case 2: snprintf(buf, sizeof(buf), "S:%d%%", lastSoilPct); break;
+    case 3: snprintf(buf, sizeof(buf), "L:%d%%", lastLightPct); break;
+    case 4: snprintf(buf, sizeof(buf), "R:%d%%", lastRainPct); break;
+    case 5: snprintf(buf, sizeof(buf), "W:%d%%", lastWaterPct); break;
+  }
+  showOnMatrix(buf);
+  matrixReadingIndex = (matrixReadingIndex + 1) % 6;
 }
 
 // ---------------- Pump Control ----------------
@@ -851,12 +912,20 @@ void fetchRecommendationFromServer() {
   int aiDurationSec = doc["irrigation"]["duration_sec"] | 0;
   const char* reason = doc["irrigation"]["reason"] | "";
   float rainForecastMm = doc["rain_forecast_mm"] | 0.0;
+  const char* weatherCondition = doc["weather_condition"] | "Unknown";
+  int rainProbabilityPct = doc["rain_probability_pct"] | 0;
 
   if (Blynk.connected()) {
     Blynk.virtualWrite(V10, label);
     Blynk.virtualWrite(V13, growthStage);  // Current Plant State (seedling/mature)
     Blynk.virtualWrite(V14, careTip);      // Care Tip for the diagnosed condition
-    Blynk.virtualWrite(V16, rainForecastMm);  // Rain Forecast (mm, next ~6h)
+
+    // Rain Forecast (V16) - a short, readable weather line rather than a raw
+    // mm figure, e.g. "Rainy - P:80%". The irrigation decision underneath
+    // still runs on rainForecastMm (see RAIN_SKIP_THRESHOLD_MM in
+    // irrigation_rules.py) - only the dashboard display changed.
+    String weatherLine = String(weatherCondition) + " - P:" + String(rainProbabilityPct) + "%";
+    Blynk.virtualWrite(V16, weatherLine);
 
     // AI Irrigation Decision (V17) - the actual reasoning behind whatever the
     // pump does next, not just the plant diagnosis. Build a short, readable
@@ -869,7 +938,9 @@ void fetchRecommendationFromServer() {
   }
 
   Serial.print("[server] Plant health: "); Serial.print(label);
-  Serial.print(" | Rain forecast: "); Serial.print(rainForecastMm); Serial.print("mm");
+  Serial.print(" | Weather: "); Serial.print(weatherCondition);
+  Serial.print(" P:"); Serial.print(rainProbabilityPct); Serial.print("%");
+  Serial.print(" ("); Serial.print(rainForecastMm); Serial.print("mm/6h)");
   Serial.print(" | AI irrigation: "); Serial.print(aiWater ? "WATER" : "skip");
   Serial.print(" (" ); Serial.print(reason); Serial.println(")");
 
@@ -1010,6 +1081,9 @@ void setup() {
   analogReadResolution(10);
   dht.begin();
 
+  matrix.begin();
+  showOnMatrix("READY");
+
   if (CALIBRATION_MODE) {
     Serial.println("=== CALIBRATION MODE: raw values only ===");
     timer.setInterval(1000L, printRawValues);
@@ -1034,6 +1108,7 @@ void setup() {
   // otherwise a live demo would mean waiting up to 5 real minutes to see
   // a watering decision happen.
   syncTimerId = timer.setInterval(sendInterval, syncWithServer);
+  timer.setInterval(MATRIX_CYCLE_MS, cycleMatrixReading);
 }
 
 void loop() {

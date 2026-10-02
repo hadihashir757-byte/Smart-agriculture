@@ -40,7 +40,7 @@ from crop_growth_tips import get_growth_tip  # noqa: E402
 from irrigation_rules import get_irrigation_recommendation  # noqa: E402
 from macrodroid import notify_macrodroid  # noqa: E402
 from plant_care_tips import get_care_tip  # noqa: E402
-from weather import get_rain_forecast_mm  # noqa: E402
+from weather import get_weather_forecast  # noqa: E402
 
 app = Flask(__name__)
 db.init_db()
@@ -100,7 +100,8 @@ def get_recommendation():
     if latest is None:
         return jsonify({"error": "no sensor data received yet"}), 404
 
-    rain_forecast_mm = get_rain_forecast_mm()
+    weather = get_weather_forecast()
+    rain_forecast_mm = weather["rain_mm"]
     plant_status = db.latest_accepted_plant_health()
     # Prefer the image-derived growth stage (see growth_stage.py) over the
     # sensor payload's plant_stage field, which is just a static default -
@@ -127,6 +128,8 @@ def get_recommendation():
     return jsonify({
         "irrigation": recommendation,
         "rain_forecast_mm": rain_forecast_mm,
+        "weather_condition": weather["condition"],
+        "rain_probability_pct": weather["probability_pct"],
         "growth_tip": get_growth_tip(latest["crop_type"] or "tomato"),
         "plant_health": {
             "label": plant_health.prettify_label(plant_status["predicted_class"]),
