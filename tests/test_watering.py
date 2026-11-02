@@ -111,8 +111,9 @@ def test_plantain_needs_more_water_than_tomato():
 
 
 def test_hot_dry_air_adds_time():
-    cool = d(soil(29))["seconds"]          # 21 s
-    hot = d(soil(29, temperature_c=36, humidity_percent=25))["seconds"]
+    from irrigation_rules import get_irrigation_recommendation as g
+    cool = g(29, 25, 60, 0, "tomato", "mature")["duration_sec"]
+    hot = g(29, 36, 25, 0, "tomato", "mature")["duration_sec"]
     assert hot == cool + 10
 
 
