@@ -1,0 +1,47 @@
+# Rover -> AI server -> irrigation station
+
+```
+Rover (ESP32) --telemetry--> ThingsBoard --rule chain (REST API call)--> POST /zone-event
+                                                                           |
+                  irrigation station <--RPC "water" (two-way)-- ThingsBoard REST <--+  (only if AUTO_WATER=true)
+```
+
+The server only REQUESTS watering. The station still checks everything locally and can refuse
+(tank low, duplicate, expired, resting, too long). The station's real answer is stored in the
+decision log (`GET /decisions`, field `status`: `sent_accepted` / `sent_rejected` / ...), so
+"recommended" and "actually done" are never confused.
+
+## 1. Test by hand first (dry run, AUTO_WATER=false)
+
+```bash
+curl -s -X POST https://YOUR-SERVER/zone-event \
+  -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
+  -d '{"zone_id":1,"soil_moisture_percent":22,"temperature_c":29,"humidity_percent":55,"rain_detected":false}'
+curl -s -H "X-API-Key: $API_KEY" https://YOUR-SERVER/decisions
+```
+
+Fields: `zone_id` (required), `soil_moisture_percent`, `temperature_c`, `humidity_percent`,
+`light_percent`, `rain_detected`, optional `crop_type`, `tank_level_percent`, `reading_ts` (epoch s).
+
+## 2. ThingsBoard rule chain (rover -> server)
+
+In the Root Rule Chain add: **Message type switch** (Post telemetry) -> **Script filter**
+(`return msg.event == 'soil_measured';`) -> **REST API call**
+- URL: `https://YOUR-SERVER/zone-event`, method POST
+- Header `X-API-Key`: your key  (Content-Type: application/json)
+- Body: the message itself. Make sure the rover's `soil_measured` telemetry carries
+  `zone_id`, `soil_moisture_percent`, `temperature_c`, `humidity_percent`, `rain_detected`
+  (a Script transformation node can add missing keys from the device's latest telemetry).
+
+Note: the rover only sends `soil_moisture_percent` after `SOIL_CALIBRATED` is set to `true`
+in the rover firmware - until then the server will correctly answer "no soil moisture reading".
+
+## 3. Turning real watering on
+
+Set in `.env`: `TB_USERNAME`, `TB_PASSWORD` (use a dedicated ThingsBoard user), then `AUTO_WATER=true`
+and restart. Watch `/decisions` for the first few runs. Keep the station's own limits as the final authority.
+
+## 4. Optional dashboard feed
+
+Create a ThingsBoard device `ai_server`, put its token in `AI_DEVICE_TOKEN`. Each decision is then
+published as telemetry: `ai_zone_id`, `ai_decision`, `ai_seconds`, `ai_reason`, `ai_status`, `ai_plant_label`.

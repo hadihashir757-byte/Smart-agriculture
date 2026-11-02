@@ -26,13 +26,13 @@ to requirements.txt for production) from inside the api/ directory, or just
 import json
 import os
 import sys
-from functools import wraps
 
 from flask import Flask, jsonify, request
 from PIL import Image
 
 sys.path.insert(0, os.path.dirname(__file__))
 import db  # noqa: E402
+from auth import require_api_key  # noqa: E402
 import plant_health  # noqa: E402
 from growth_stage import plant_pixel_ratio, estimate_growth_stage  # noqa: E402
 from image_quality import check_quality  # noqa: E402
@@ -45,31 +45,14 @@ from weather import get_weather_forecast  # noqa: E402
 app = Flask(__name__)
 db.init_db()
 
-API_KEY = os.environ.get("API_KEY", "dev-secret-change-me")
-if API_KEY == "dev-secret-change-me":
-    print("!! WARNING: API_KEY not set in environment - using an insecure default. "
-          "Set API_KEY before deploying anywhere public. !!")
+from rover_routes import bp as rover_bp  # noqa: E402
+app.register_blueprint(rover_bp)
 
 # TEMPORARY debug switch - set to False to confirm photos are reaching this
 # endpoint at all, separately from whether they pass the blur/exposure check.
 # Turn this back to True before the real demo - without it, blurry photos
 # produce confident-looking wrong diagnoses instead of being rejected.
 QUALITY_GATE_ENABLED = os.environ.get("QUALITY_GATE_ENABLED", "true").lower() != "false"
-
-
-def require_api_key(f):
-    @wraps(f)
-    def wrapper(*args, **kwargs):
-        # Accepts the key via header (the normal/preferred way) OR as a
-        # ?api_key= query parameter - added as a fallback for HTTP clients
-        # that don't reliably send custom headers on certain request types
-        # (seen in practice with some MacroDroid HTTP Request configurations
-        # on POST-with-file-body uploads).
-        provided = request.headers.get("X-API-Key") or request.args.get("api_key")
-        if provided != API_KEY:
-            return jsonify({"error": "unauthorized"}), 401
-        return f(*args, **kwargs)
-    return wrapper
 
 
 @app.route("/health", methods=["GET"])

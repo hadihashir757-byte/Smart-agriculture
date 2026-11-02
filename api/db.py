@@ -14,7 +14,11 @@ import os
 import sqlite3
 import time
 
-DB_PATH = os.path.join(os.path.dirname(__file__), "..", "data", "app.db")
+# Where the database lives. Point DATA_DIR at a folder that SURVIVES restarts
+# (a normal folder on your own server is fine) so the growth baseline,
+# decision log and cooldowns are not lost.
+DATA_DIR = os.environ.get("DATA_DIR") or os.path.join(os.path.dirname(__file__), "..", "data")
+DB_PATH = os.path.join(DATA_DIR, "app.db")
 
 
 def get_connection():
@@ -65,6 +69,20 @@ def init_db():
             water INTEGER,
             duration_sec INTEGER,
             reason TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS watering_decisions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts REAL NOT NULL,
+            zone_id INTEGER,
+            pump INTEGER,
+            seconds INTEGER,
+            decision TEXT NOT NULL,      -- 'water' or 'skip'
+            reason TEXT,
+            command_id TEXT,
+            status TEXT NOT NULL,        -- recommended | dry_run | sent_accepted | sent_rejected | send_failed | skipped
+            station_reply TEXT,          -- JSON reply from the station (verified result), if any
+            inputs TEXT                  -- JSON of the readings the decision was based on
         );
 
         CREATE TABLE IF NOT EXISTS app_state (
@@ -125,14 +143,21 @@ def insert_plant_health_prediction(predicted_class, confidence, accepted, reject
     conn.close()
 
 
-def latest_accepted_plant_health():
+def latest_accepted_plant_health(max_age_s=None):
+    """Newest accepted prediction. If max_age_s is given and the newest one is
+    older than that, return None (a stale photo result must not drive decisions)."""
     conn = get_connection()
     row = conn.execute(
         """SELECT * FROM plant_health_predictions
            WHERE accepted = 1 ORDER BY ts DESC LIMIT 1"""
     ).fetchone()
     conn.close()
-    return dict(row) if row else None
+    if not row:
+        return None
+    row = dict(row)
+    if max_age_s is not None and (time.time() - row["ts"]) > max_age_s:
+        return None
+    return row
 
 
 def get_growth_baseline():
@@ -179,3 +204,53 @@ def insert_irrigation_log(water, duration_sec, reason):
     )
     conn.commit()
     conn.close()
+
+
+# ---------------- watering decisions (cooldown + audit log) ----------------
+
+def insert_watering_decision(zone_id, pump, seconds, decision, reason, command_id, status, inputs):
+    conn = get_connection()
+    cur = conn.execute(
+        """INSERT INTO watering_decisions
+           (ts, zone_id, pump, seconds, decision, reason, command_id, status, inputs)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (time.time(), zone_id, pump, seconds, decision, reason, command_id, status,
+         json.dumps(inputs) if inputs is not None else None),
+    )
+    conn.commit()
+    row_id = cur.lastrowid
+    conn.close()
+    return row_id
+
+
+def update_watering_decision(row_id, status, station_reply=None):
+    conn = get_connection()
+    conn.execute(
+        "UPDATE watering_decisions SET status = ?, station_reply = ? WHERE id = ?",
+        (status, json.dumps(station_reply) if station_reply is not None else None, row_id),
+    )
+    conn.commit()
+    conn.close()
+
+
+def last_watering_ts(zone_id):
+    """Time of the last water command for this zone that the station did not
+    reject (recommended-only / dry-run / skipped rows do not start a cooldown)."""
+    conn = get_connection()
+    row = conn.execute(
+        """SELECT ts FROM watering_decisions
+           WHERE zone_id = ? AND decision = 'water' AND status = 'sent_accepted'
+           ORDER BY ts DESC LIMIT 1""",
+        (zone_id,),
+    ).fetchone()
+    conn.close()
+    return row["ts"] if row else None
+
+
+def recent_watering_decisions(limit=50):
+    conn = get_connection()
+    rows = conn.execute(
+        "SELECT * FROM watering_decisions ORDER BY ts DESC LIMIT ?", (int(limit),)
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
