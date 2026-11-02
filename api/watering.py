@@ -45,7 +45,8 @@ def _skip(zone_id, reason, inputs):
             "reason": reason, "command": None, "inputs": inputs}
 
 
-FUNGAL_WORDS = ("blight", "spot", "mold", "mould", "mildew", "rust", "sigatoka", "scab", "rot", "fungus", "fungal")
+FUNGAL_WORDS = ("blight", "spot", "mold", "mould", "mildew", "rust", "sigatoka", "scab", "rot", "fungus", "fungal", "cordana", "pestalotiopsis")
+NEUTRAL_WORDS = ("mite", "virus", "mosaic", "curl")   # not water-related: no change
 OVERWATER_WORDS = ("overwater", "waterlog", "over water")
 STRESS_WORDS = ("wilt", "drought", "water stress", "dry", "underwater")
 HEALTH_MIN_CONFIDENCE = float(os.environ.get("HEALTH_MIN_CONFIDENCE", "0.6"))
@@ -55,9 +56,11 @@ def _health_adjust(seconds, soil, plant_health):
     """Returns (seconds, note, skip_reason). Only confident, fresh photo results act."""
     if not plant_health:
         return seconds, "", None
-    label = str(plant_health.get("label") or "").lower()
+    label = str(plant_health.get("label") or "").split("___")[-1].replace("_", " ").strip().lower()
     conf = plant_health.get("confidence") or 0
     if not label or label in ("healthy", "uncertain") or conf < HEALTH_MIN_CONFIDENCE:
+        return seconds, "", None
+    if any(w in label for w in NEUTRAL_WORDS):
         return seconds, "", None
     if any(w in label for w in OVERWATER_WORDS):
         return 0, "", f"plant looks overwatered ({label}) - not watering"

@@ -45,3 +45,21 @@ and restart. Watch `/decisions` for the first few runs. Keep the station's own l
 
 Create a ThingsBoard device `ai_server`, put its token in `AI_DEVICE_TOKEN`. Each decision is then
 published as telemetry: `ai_zone_id`, `ai_decision`, `ai_seconds`, `ai_reason`, `ai_status`, `ai_plant_label`.
+
+## Watering rules (summary)
+| Situation | Result |
+|---|---|
+| Tank < 15% or unreadable | skip |
+| Raining now (rain sensor) | skip |
+| Soil >= 80% | skip |
+| Soil < 20% | water (max 30 s) even if rain is forecast |
+| Rain forecast >= 5 mm, soil >= 40% | skip, wait for rain |
+| Rain forecast >= 5 mm, soil 20-40% | short top-up, max 15 s |
+| Otherwise | water if below the crop/stage start point (tomato 40/30, plantain 60/50) |
+| Seconds | 20 + gap to start point, +10 if hot (>=32 C) or dry air (<=30%), clamped 5-30 |
+| Photo: fungal disease (blight, spot, mold, sigatoka, cordana, pestalotiopsis) | skip; if soil < 20% gentle, max 15 s |
+| Photo: mites / virus / healthy | no change |
+| Photo: wilt / water stress | +5 s |
+| Photo: overwatered | skip |
+| Same zone watered < 30 min ago | skip |
+Photo results only count if confidence >= 0.6 and the photo is under 2 hours old.

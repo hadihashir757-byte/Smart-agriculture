@@ -149,3 +149,17 @@ def test_low_confidence_or_healthy_ignored():
 def test_cooldown_blocks_second_watering():
     assert d(last_water_ts=NOW - 600)["decision"] == "skip"
     assert d(last_water_ts=NOW - 4000)["decision"] == "water"
+
+
+@pytest.mark.parametrize("label,expect", [
+    ("Tomato___Early_blight", "skip"), ("Tomato___Late_blight", "skip"),
+    ("Tomato___Bacterial_spot", "skip"), ("Tomato___Leaf_Mold", "skip"),
+    ("Tomato___Septoria_leaf_spot", "skip"), ("Tomato___Target_Spot", "skip"),
+    ("sigatoka", "skip"), ("cordana", "skip"), ("pestalotiopsis", "skip"),
+    ("Tomato___Spider_mites Two-spotted_spider_mite", "water"),
+    ("Tomato___Tomato_Yellow_Leaf_Curl_Virus", "water"),
+    ("Tomato___Tomato_mosaic_virus", "water"),
+    ("Tomato___healthy", "water"), ("healthy", "water"),
+])
+def test_real_model_labels(label, expect):
+    assert d(soil(25), plant_health=H(label))["decision"] == expect
