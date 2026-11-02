@@ -60,3 +60,91 @@ def test_wet_soil_skips():
 def test_seconds_are_clamped():
     r = d({**DRY, "soil_moisture_percent": 5})   # critically dry -> 45 s from the rules
     assert r["seconds"] == watering.MAX_SECONDS
+
+
+# ---- rain-soon rule, tank unknown, plant-health rules ----
+import pytest  # noqa: E402
+
+
+def soil(pct, **extra):
+    return {**DRY, "soil_moisture_percent": pct, **extra}
+
+
+H = lambda label, conf=0.9: {"label": label, "confidence": conf}  # noqa: E731
+
+
+@pytest.mark.parametrize("pct,rain,expect", [
+    (12, 10, "water"),   # critical: always
+    (30, 10, "water"),   # rain coming but < 40: short top-up
+    (39, 10, "water"),
+    (40, 10, "skip"),    # >= 40: wait for rain
+    (55, 10, "skip"),
+    (30, 2, "skip"),     # small rain ignored, tomato mature start=30 -> adequate
+    (25, 2, "water"),
+    (85, 0, "skip"),     # too wet
+])
+def test_rain_matrix(pct, rain, expect):
+    assert d(soil(pct), rain_forecast_mm=rain)["decision"] == expect
+
+
+def test_rain_topup_is_short():
+    r = d(soil(30), rain_forecast_mm=10)
+    assert r["seconds"] <= 15 and "top-up" in r["reason"]
+
+
+def test_rain_now_beats_critical():
+    assert d(soil(5, rain_detected=True), rain_forecast_mm=0)["decision"] == "skip"
+
+
+def test_tank_unknown_skips():
+    assert d(tank_percent=None)["decision"] == "skip"
+
+
+def test_seedling_waters_earlier_than_mature():
+    assert d(soil(35), plant_stage="seedling")["decision"] == "water"
+    assert d(soil(35), plant_stage="mature")["decision"] == "skip"
+
+
+def test_plantain_needs_more_water_than_tomato():
+    assert d(soil(45), crop_type="plantain")["decision"] == "water"
+    assert d(soil(45), crop_type="tomato")["decision"] == "skip"
+
+
+def test_hot_dry_air_adds_time():
+    cool = d(soil(29))["seconds"]          # 21 s
+    hot = d(soil(29, temperature_c=36, humidity_percent=25))["seconds"]
+    assert hot == cool + 10
+
+
+def test_never_exceeds_max():
+    assert d(soil(1))["seconds"] <= watering.MAX_SECONDS
+
+
+def test_disease_skips_when_not_critical():
+    r = d(soil(25), plant_health=H("Early blight"))
+    assert r["decision"] == "skip" and "disease" in r["reason"]
+
+
+def test_disease_critical_dry_waters_gently():
+    r = d(soil(10), plant_health=H("Late blight"))
+    assert r["decision"] == "water" and r["seconds"] <= 15
+
+
+def test_stress_adds_5s():
+    base = d(soil(25))["seconds"]
+    assert d(soil(25), plant_health=H("wilt"))["seconds"] == base + 5
+
+
+def test_overwatered_skips_even_if_dry_reading():
+    assert d(soil(25), plant_health=H("overwatered"))["decision"] == "skip"
+
+
+def test_low_confidence_or_healthy_ignored():
+    base = d(soil(25))["seconds"]
+    assert d(soil(25), plant_health=H("Early blight", 0.3))["seconds"] == base
+    assert d(soil(25), plant_health=H("healthy"))["seconds"] == base
+
+
+def test_cooldown_blocks_second_watering():
+    assert d(last_water_ts=NOW - 600)["decision"] == "skip"
+    assert d(last_water_ts=NOW - 4000)["decision"] == "water"

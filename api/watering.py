@@ -45,6 +45,31 @@ def _skip(zone_id, reason, inputs):
             "reason": reason, "command": None, "inputs": inputs}
 
 
+FUNGAL_WORDS = ("blight", "spot", "mold", "mould", "mildew", "rust", "sigatoka", "scab", "rot", "fungus", "fungal")
+OVERWATER_WORDS = ("overwater", "waterlog", "over water")
+STRESS_WORDS = ("wilt", "drought", "water stress", "dry", "underwater")
+HEALTH_MIN_CONFIDENCE = float(os.environ.get("HEALTH_MIN_CONFIDENCE", "0.6"))
+
+
+def _health_adjust(seconds, soil, plant_health):
+    """Returns (seconds, note, skip_reason). Only confident, fresh photo results act."""
+    if not plant_health:
+        return seconds, "", None
+    label = str(plant_health.get("label") or "").lower()
+    conf = plant_health.get("confidence") or 0
+    if not label or label in ("healthy", "uncertain") or conf < HEALTH_MIN_CONFIDENCE:
+        return seconds, "", None
+    if any(w in label for w in OVERWATER_WORDS):
+        return 0, "", f"plant looks overwatered ({label}) - not watering"
+    if any(w in label for w in FUNGAL_WORDS):
+        if soil < 20:   # truly dry: still water, but gently and never more than 15 s
+            return min(seconds, 15), f"; disease ({label}) so kept gentle", None
+        return 0, "", f"plant disease ({label}) - wet soil/leaves make it worse, not watering"
+    if any(w in label for w in STRESS_WORDS):
+        return seconds + 5, f"; +5 s for water stress ({label})", None
+    return seconds, "", None
+
+
 def decide(zone_id, readings, crop_type="tomato", plant_stage="mature", rain_forecast_mm=0.0,
            tank_percent=100, last_water_ts=None, plant_health=None, now=None, zone_pump_map=None):
     """
@@ -57,6 +82,9 @@ def decide(zone_id, readings, crop_type="tomato", plant_stage="mature", rain_for
     inputs = {"readings": readings, "crop_type": crop_type, "plant_stage": plant_stage,
               "rain_forecast_mm": rain_forecast_mm, "tank_percent": tank_percent,
               "plant_health": plant_health}
+
+    if tank_percent is None:
+        return _skip(zone_id, "tank level unknown - not watering", inputs)
 
     if zone_id not in zone_pump_map:
         return _skip(zone_id, f"zone {zone_id} is not mapped to a pump", inputs)
@@ -89,7 +117,11 @@ def decide(zone_id, readings, crop_type="tomato", plant_stage="mature", rain_for
     if not rec["water"]:
         return _skip(zone_id, rec["reason"], inputs)
 
-    seconds = max(MIN_SECONDS, min(MAX_SECONDS, int(rec["duration_sec"])))
+    seconds, note, skip_reason = _health_adjust(int(rec["duration_sec"]), soil, plant_health)
+    if skip_reason:
+        return _skip(zone_id, skip_reason, inputs)
+    rec["reason"] += note
+    seconds = max(MIN_SECONDS, min(MAX_SECONDS, seconds))
     command_id = "ai_" + uuid.uuid4().hex[:12]
     command = {"method": "water",
                "params": {"pump": pump, "seconds": seconds,

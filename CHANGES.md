@@ -17,3 +17,8 @@ New AI -> station path
 - Tests: `tests/test_watering.py`. Docs: `docs/`. Service file: `deploy/`.
 
 NOT tested against a live ThingsBoard account or the real station - test with AUTO_WATER=false first.
+
+## Update: smarter watering rules
+- Rain forecast >= 5 mm: skip if soil >= 40%, otherwise a short top-up (max 15 s). Critical (<20%) still waters.
+- Plant-health photo result now matters (confident >= 0.6 and fresh): disease -> skip (gentle 15 s max if soil <20%), water stress -> +5 s, overwatered -> skip.
+- Tank level unreadable -> skip (when ThingsBoard is configured).

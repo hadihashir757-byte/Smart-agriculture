@@ -88,11 +88,14 @@ def zone_event():
     if tank_percent is None:
         tank_percent = payload.get("tank_level_percent")
     if tank_percent is None:
-        tank_percent, tank_note = 100, tank_note or "tank level unknown - station will enforce it"
+        if thingsboard.configured():
+            tank_note = tank_note or "tank level not available"   # decide() will skip
+        else:
+            tank_percent, tank_note = 100, "tank level unknown (no ThingsBoard) - station will enforce it"
 
     result = watering.decide(
         zone_id, readings, crop_type=crop_type, plant_stage=plant_stage, rain_forecast_mm=rain_mm,
-        tank_percent=float(tank_percent), last_water_ts=db.last_watering_ts(zone_id),
+        tank_percent=None if tank_percent is None else float(tank_percent), last_water_ts=db.last_watering_ts(zone_id),
         plant_health=health_summary,
     )
 

@@ -12,7 +12,7 @@ Decision priority (checked in this order - first match wins):
   1. Water tank too low          -> never irrigate, no exceptions
   2. Soil at/above the stop point -> skip, already wet enough
   3. Soil critically dry          -> irrigate regardless of forecast
-  4. Rain incoming                -> skip, it's about to be watered for free
+  4. Rain incoming                -> skip if soil >= 40%, else short top-up (max 15 s)
   5. Soil below the crop/stage's start point -> irrigate
   6. Otherwise                    -> skip, moisture is in a fine range already
 """
@@ -45,6 +45,11 @@ CROP_START_THRESHOLDS = {
 # If forecast rain (mm) in the next few hours is at or above this, skip
 # watering even if soil is dry - it's about to be watered for free.
 RAIN_SKIP_THRESHOLD_MM = 5.0
+
+# When that much rain is coming, we still give a SHORT top-up if soil is below
+# this % (instead of skipping outright); above it we wait for the rain.
+RAIN_SOON_WATER_BELOW_PCT = 40
+RAIN_SOON_MAX_SECONDS = 15
 
 
 def get_irrigation_recommendation(soil_pct, temperature_c, humidity_pct,
@@ -86,10 +91,17 @@ def get_irrigation_recommendation(soil_pct, temperature_c, humidity_pct,
         }
 
     if rain_forecast_mm >= RAIN_SKIP_THRESHOLD_MM:
+        if soil_pct >= RAIN_SOON_WATER_BELOW_PCT:
+            return {
+                "water": False,
+                "duration_sec": 0,
+                "reason": f"Rain forecast ({rain_forecast_mm}mm) and soil {soil_pct}% >= {RAIN_SOON_WATER_BELOW_PCT}% - waiting for rain",
+            }
+        deficit = RAIN_SOON_WATER_BELOW_PCT - soil_pct
         return {
-            "water": False,
-            "duration_sec": 0,
-            "reason": f"Rain forecast ({rain_forecast_mm}mm) covers watering need - skipping",
+            "water": True,
+            "duration_sec": min(RAIN_SOON_MAX_SECONDS, 5 + deficit),
+            "reason": f"Rain forecast ({rain_forecast_mm}mm) but soil only {soil_pct}% (< {RAIN_SOON_WATER_BELOW_PCT}%) - short top-up",
         }
 
     thresholds = CROP_START_THRESHOLDS.get(crop_type.lower(), CROP_START_THRESHOLDS["default"])
