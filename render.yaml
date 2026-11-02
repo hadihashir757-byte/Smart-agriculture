@@ -22,3 +22,13 @@ services:
         sync: false          # optional
       - key: LOCATION_LON
         sync: false          # optional
+      - key: ZONE_PUMP_MAP
+        value: "1:1,2:2"
+      - key: AUTO_WATER
+        value: "false"      # keep false until tested; then switch to true
+      - key: TB_USERNAME
+        sync: false
+      - key: TB_PASSWORD
+        sync: false
+      - key: DATA_DIR
+        value: /var/data   # on Render this only survives restarts if you attach a (paid) disk at /var/data

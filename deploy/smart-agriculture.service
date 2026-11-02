@@ -1,0 +1,20 @@
+# systemd service for your own Linux server / Raspberry Pi.
+#   sudo cp deploy/smart-agriculture.service /etc/systemd/system/
+#   sudo nano /etc/systemd/system/smart-agriculture.service    # fix User and paths
+#   sudo systemctl daemon-reload && sudo systemctl enable --now smart-agriculture
+#   journalctl -u smart-agriculture -f                          # live logs
+[Unit]
+Description=Smart Agriculture API
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=pi
+WorkingDirectory=/home/pi/Smart-agriculture
+EnvironmentFile=/home/pi/Smart-agriculture/.env
+ExecStart=/home/pi/Smart-agriculture/venv/bin/gunicorn --chdir api --bind 127.0.0.1:8000 --workers 2 --timeout 60 app:app
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
