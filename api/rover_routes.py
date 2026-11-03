@@ -11,10 +11,12 @@ AUTO_WATER is OFF by default: the server only *recommends* (dry run) until you t
 """
 
 import os
+import time
 
 from flask import Blueprint, jsonify, request
 
 import db
+import explain
 import irrigation_plan
 import plant_health as plant_health_mod
 import thingsboard
@@ -55,11 +57,12 @@ def evaluate_zone(zone_id, readings, crop_type, tank_hint=None):
         rain_mm = 0.0
 
     # Tank level: ask the station itself when ThingsBoard is configured; else use what was sent.
-    tank_percent, tank_note, demo = None, "", False
+    tank_percent, tank_note, demo, rover = None, "", False, None
     if thingsboard.configured():
         try:
-            st = thingsboard.latest_telemetry(thingsboard.STATION_DEVICE_NAME, ["tank_level_percent", "demo_mode"])
+            st = thingsboard.latest_telemetry(thingsboard.STATION_DEVICE_NAME, ["tank_level_percent", "demo_mode", "rover_link_ok", "rover_at_zone", "rover_zone"])
             tank_percent = st.get("tank_level_percent")
+            rover = explain.rover_state(st)
             demo = str(st.get("demo_mode")).strip().lower() in ("true", "1")
         except Exception as e:  # noqa: BLE001
             tank_note = f"could not read tank level from ThingsBoard ({e})"
@@ -72,7 +75,7 @@ def evaluate_zone(zone_id, readings, crop_type, tank_hint=None):
             tank_percent, tank_note = 100, "tank level unknown (no ThingsBoard) - station will enforce it"
 
     if demo:
-        return _demo_plan(zone_id, readings, rain_mm, tank_percent, tank_note, health_summary, plant_stage)
+        return _demo_plan(zone_id, readings, rain_mm, tank_percent, tank_note, health_summary, plant_stage, rover)
 
     result = watering.decide(
         zone_id, readings, crop_type=crop_type, plant_stage=plant_stage, rain_forecast_mm=rain_mm,
@@ -103,9 +106,18 @@ def evaluate_zone(zone_id, readings, crop_type, tank_hint=None):
     if result["decision"] == "water" or status != "skipped":
         db.update_watering_decision(row_id, status, station_reply)
 
+    checks = explain.checks_line(zone_id, readings.get("soil_moisture_percent"),
+                                 None if tank_percent is None else float(tank_percent), rain_mm,
+                                 bool(readings.get("rain_detected")), rover, _age(readings), demo=False)
+    why = result["reason"].rstrip(".")
+    if result["decision"] == "water":
+        why += f". Water for {result['seconds']} s."
+        if rover is not None and not (rover["link_ok"] and rover["at_zone"] and rover["zone"] == zone_id):
+            why += f" The station will refuse until the rover is stopped at zone {zone_id}, so no pump starts before that."
     thingsboard.push_ai_telemetry({
         "ai_zone_id": zone_id, "ai_decision": result["decision"], "ai_seconds": result["seconds"],
         "ai_reason": result["reason"], "ai_status": status,
+        "ai_report": explain.report(checks, "water" if result["decision"] == "water" else "do not water", why),
         "ai_plant_label": plant_health_mod.prettify_label(health_summary["label"]) if health_summary else None,
         "ai_plant_stage": plant_stage,
     })
@@ -120,7 +132,12 @@ def evaluate_zone(zone_id, readings, crop_type, tank_hint=None):
 
 
 
-def _demo_plan(zone_id, readings, rain_mm, tank_percent, tank_note, health_summary, plant_stage):
+def _age(readings):
+    ts = readings.get("reading_ts")
+    return None if ts is None else max(0.0, time.time() - ts)
+
+
+def _demo_plan(zone_id, readings, rain_mm, tank_percent, tank_note, health_summary, plant_stage, rover=None):
     """Demo mode: build the pulse plan (see irrigation_plan.py). The background agent runs it."""
     pump = watering.parse_zone_pump_map().get(zone_id)
     if pump is None:
@@ -128,15 +145,19 @@ def _demo_plan(zone_id, readings, rain_mm, tank_percent, tank_note, health_summa
     else:
         plan = irrigation_plan.make_plan(zone_id, pump, readings.get("soil_moisture_percent"), rain_mm,
                                          bool(readings.get("rain_detected")),
-                                         None if tank_percent is None else float(tank_percent))
+                                         None if tank_percent is None else float(tank_percent), rover=rover)
     decision = "water" if plan["run"] else "skip"
     status = ("plan_ready" if AUTO_WATER else "dry_run") if plan["run"] else "skipped"
     db.insert_watering_decision(zone_id, pump, plan.get("pulse_s", 0), decision, plan["text"], None, status,
                                 {"readings": readings, "rain_forecast_mm": rain_mm, "tank_percent": tank_percent,
                                  "demo": True, "plan": {k: v for k, v in plan.items() if k != "text"}})
+    checks = explain.checks_line(zone_id, readings.get("soil_moisture_percent"),
+                                 None if tank_percent is None else float(tank_percent), rain_mm,
+                                 bool(readings.get("rain_detected")), rover, _age(readings), plan.get("target"), demo=True)
     thingsboard.push_ai_telemetry({
         "ai_zone_id": zone_id, "ai_decision": decision, "ai_seconds": plan.get("pulse_s", 0),
         "ai_reason": plan["text"], "ai_explanation": plan["text"], "ai_status": status,
+        "ai_report": explain.report(checks, "water" if plan["run"] else "do not water", plan["text"]),
         "ai_target_percent": plan.get("target"),
         "ai_plant_label": plant_health_mod.prettify_label(health_summary["label"]) if health_summary else None,
         "ai_plant_stage": plant_stage,

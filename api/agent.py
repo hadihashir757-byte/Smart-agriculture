@@ -138,6 +138,12 @@ class _RealIo(irrigation_plan.Io):
         v = thingsboard.latest_telemetry(thingsboard.STATION_DEVICE_NAME, ["demo_mode"]).get("demo_mode")
         return str(v).strip().lower() in ("true", "1")
 
+    def hold(self, on):
+        try:
+            thingsboard.send_rpc(ROVER_DEVICE_NAME, "holdZone", bool(on))
+        except Exception as e:  # noqa: BLE001
+            log(f"could not {'hold' if on else 'release'} the rover at the zone: {e}")
+
     def say(self, text, **extra):
         log(f"[plan] {text}")
         thingsboard.push_ai_telemetry({"ai_zone_id": self.zone_id, "ai_explanation": text, "ai_progress": text, **extra})

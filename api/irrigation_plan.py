@@ -26,7 +26,7 @@ TANK_MIN_PCT = 15
 SOIL_WAIT_S = 60            # how long to wait for the rover to deliver a new soil reading
 
 
-def make_plan(zone_id, pump, soil, rain_mm, rain_detected, tank_percent, rain_soon_mm=5.0):
+def make_plan(zone_id, pump, soil, rain_mm, rain_detected, tank_percent, rain_soon_mm=5.0, rover=None):
     """Returns {'run': bool, 'text': str, ...}. 'text' is the explanation shown on the dashboard."""
     if rain_detected:
         return {"run": False, "zone_id": zone_id, "text": f"Zone {zone_id}: it is raining now, so the AI is not watering."}
@@ -37,6 +37,14 @@ def make_plan(zone_id, pump, soil, rain_mm, rain_detected, tank_percent, rain_so
                 "text": f"Zone {zone_id}: the tank is at {tank_percent:.0f}% (below {TANK_MIN_PCT}%), so the AI is not watering."}
     if soil is None:
         return {"run": False, "zone_id": zone_id, "text": f"Zone {zone_id}: no soil reading yet, so the AI is not watering."}
+
+    if rover is not None:
+        if not rover.get("link_ok"):
+            return {"run": False, "zone_id": zone_id, "text": f"Zone {zone_id}: the rover link is lost, so the AI cannot confirm the rover is at the zone. No pump is turned on."}
+        if not rover.get("at_zone") or rover.get("zone") != zone_id:
+            at = f"zone {rover.get('zone')}" if rover.get("zone") else "no zone"
+            return {"run": False, "zone_id": zone_id,
+                    "text": f"Zone {zone_id}: the rover is not stopped at zone {zone_id} (it reports {at}). No pump is turned on."}
 
     rain = rain_mm >= rain_soon_mm
     target = RAIN_TARGET_PCT if rain else DEMO_TARGET_PCT
@@ -76,12 +84,34 @@ class Io:
     def say(self, text, **extra):            # publish progress to the dashboard
         pass
 
+    def hold(self, on):                      # ask the rover to stay at the zone while we water
+        pass
+
     def sleep(self, seconds):
         time.sleep(seconds)
 
 
+REFUSAL_TEXT = {
+    "rover_not_at_zone": "the rover is not at this zone",
+    "rover_link_lost": "the rover link is lost",
+    "tank_low": "the tank is too low", "tank_sensor_invalid": "the tank sensor gives no valid reading",
+    "estop_active": "the emergency stop is on", "resting": "the pump is still resting",
+    "already_running": "the pump is already running", "other_pump_running": "the other pump is running",
+    "time_not_synced": "the station clock is not set yet", "expired": "the command arrived too late",
+}
+
+
 def run_plan(plan, io):
-    """Executes a plan from make_plan(). Returns {'outcome': ..., 'soil': ..., 'summary': ...}."""
+    """Executes a plan from make_plan(). The rover is asked to stay at the zone while we water."""
+    io.hold(True)
+    try:
+        return _run_plan(plan, io)
+    finally:
+        io.hold(False)
+
+
+def _run_plan(plan, io):
+    """Returns {'outcome': ..., 'soil': ..., 'summary': ...}."""
     pump, zone, target = plan["pump"], plan["zone_id"], plan["target"]
     say = io.say
     say(plan["text"], ai_phase="planned", ai_target_percent=target)
@@ -89,7 +119,8 @@ def run_plan(plan, io):
     def start(seconds):
         reply = io.water(pump, seconds)
         if not reply.get("accepted"):
-            return f"the station refused ({reply.get('reason', 'unknown')})"
+            why = reply.get("reason", "unknown")
+            return f"the station refused: {REFUSAL_TEXT.get(why, why)}"
         return None
 
     for i in range(1, plan["pulses"] + 1):
