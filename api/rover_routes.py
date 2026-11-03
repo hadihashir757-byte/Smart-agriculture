@@ -37,34 +37,9 @@ def _num(payload, key):
         raise ValueError(f"{key} must be a number")
 
 
-@bp.route("/zone-event", methods=["POST"])
-@require_api_key
-def zone_event():
-    payload = request.get_json(force=True, silent=True)
-    if not isinstance(payload, dict):
-        return jsonify({"error": "expected a JSON object"}), 400
-
-    try:
-        zone_id = int(payload["zone_id"])
-        readings = {
-            "soil_moisture_percent": _num(payload, "soil_moisture_percent"),
-            "temperature_c": _num(payload, "temperature_c"),
-            "humidity_percent": _num(payload, "humidity_percent"),
-            "light_percent": _num(payload, "light_percent"),
-            "rain_detected": bool(payload.get("rain_detected", False)),
-            "reading_ts": _num(payload, "reading_ts"),
-        }
-        for pct_key in ("soil_moisture_percent", "humidity_percent", "light_percent"):
-            v = readings[pct_key]
-            if v is not None and not 0 <= v <= 100:
-                raise ValueError(f"{pct_key} must be between 0 and 100")
-    except KeyError:
-        return jsonify({"error": "zone_id is required"}), 400
-    except (TypeError, ValueError) as e:
-        return jsonify({"error": str(e)}), 400
-
-    crop_type = str(payload.get("crop_type") or DEFAULT_CROP).lower()
-
+def evaluate_zone(zone_id, readings, crop_type, tank_hint=None):
+    """Decide (and, if AUTO_WATER, act) for one zone. Used by /zone-event and by the background agent.
+    tank_hint: a tank level supplied by the caller, used only if the station cannot be asked."""
     # Latest photo result (ignored if too old). Only the growth stage influences the
     # watering thresholds; disease/health is reported, never used to water more.
     health = db.latest_accepted_plant_health(max_age_s=watering.PLANT_HEALTH_MAX_AGE_S)
@@ -75,7 +50,7 @@ def zone_event():
     try:
         rain_mm = get_weather_forecast()["rain_mm"]
     except Exception as e:  # noqa: BLE001
-        print(f"[zone-event] weather unavailable, assuming no rain forecast: {e}")
+        print(f"[decide] weather unavailable, assuming no rain forecast: {e}")
         rain_mm = 0.0
 
     # Tank level: ask the station itself when ThingsBoard is configured; else use what was sent.
@@ -87,7 +62,7 @@ def zone_event():
         except Exception as e:  # noqa: BLE001
             tank_note = f"could not read tank level from ThingsBoard ({e})"
     if tank_percent is None:
-        tank_percent = payload.get("tank_level_percent")
+        tank_percent = tank_hint
     if tank_percent is None:
         if thingsboard.configured():
             tank_note = tank_note or "tank level not available"   # decide() will skip
@@ -130,12 +105,44 @@ def zone_event():
         "ai_plant_stage": plant_stage,
     })
 
-    return jsonify({
+    return {
         "decision": result["decision"], "zone_id": zone_id, "pump": result["pump"],
         "seconds": result["seconds"], "reason": result["reason"], "status": status,
         "auto_water": AUTO_WATER, "station_reply": station_reply, "tank_note": tank_note or None,
         "plant_health": health_summary,
-    })
+    }
+
+
+
+
+@bp.route("/zone-event", methods=["POST"])
+@require_api_key
+def zone_event():
+    payload = request.get_json(force=True, silent=True)
+    if not isinstance(payload, dict):
+        return jsonify({"error": "expected a JSON object"}), 400
+
+    try:
+        zone_id = int(payload["zone_id"])
+        readings = {
+            "soil_moisture_percent": _num(payload, "soil_moisture_percent"),
+            "temperature_c": _num(payload, "temperature_c"),
+            "humidity_percent": _num(payload, "humidity_percent"),
+            "light_percent": _num(payload, "light_percent"),
+            "rain_detected": bool(payload.get("rain_detected", False)),
+            "reading_ts": _num(payload, "reading_ts"),
+        }
+        for pct_key in ("soil_moisture_percent", "humidity_percent", "light_percent"):
+            v = readings[pct_key]
+            if v is not None and not 0 <= v <= 100:
+                raise ValueError(f"{pct_key} must be between 0 and 100")
+    except KeyError:
+        return jsonify({"error": "zone_id is required"}), 400
+    except (TypeError, ValueError) as e:
+        return jsonify({"error": str(e)}), 400
+
+    crop_type = str(payload.get("crop_type") or DEFAULT_CROP).lower()
+    return jsonify(evaluate_zone(zone_id, readings, crop_type, payload.get("tank_level_percent")))
 
 
 @bp.route("/decisions", methods=["GET"])

@@ -65,6 +65,27 @@ def latest_telemetry(device_name, keys):
     return out
 
 
+def latest_with_ts(device_name, keys):
+    """Like latest_telemetry but keeps the time: {'soil_moisture_percent': (value, ts_ms)}."""
+    dev = _device_id(device_name)
+    r = requests.get(f"{BASE}/api/plugins/telemetry/DEVICE/{dev}/values/timeseries",
+                     params={"keys": ",".join(keys)}, headers=_headers(), timeout=TIMEOUT)
+    r.raise_for_status()
+    return {k: (v[0]["value"], int(v[0]["ts"])) for k, v in r.json().items() if v}
+
+
+def value_at(device_name, key, ts_ms, window_ms=120000):
+    """The newest value of `key` recorded at or shortly before ts_ms (None if nothing)."""
+    dev = _device_id(device_name)
+    r = requests.get(f"{BASE}/api/plugins/telemetry/DEVICE/{dev}/values/timeseries",
+                     params={"keys": key, "startTs": int(ts_ms - window_ms), "endTs": int(ts_ms + 5000),
+                             "limit": 1, "orderBy": "DESC", "agg": "NONE"},
+                     headers=_headers(), timeout=TIMEOUT)
+    r.raise_for_status()
+    vals = r.json().get(key) or []
+    return vals[0]["value"] if vals else None
+
+
 def send_rpc(device_name, method, params, timeout_ms=8000):
     """Two-way RPC: waits for the device's reply, so we learn if the station accepted or refused."""
     dev = _device_id(device_name)

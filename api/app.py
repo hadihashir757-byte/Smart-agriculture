@@ -41,6 +41,7 @@ from irrigation_rules import get_irrigation_recommendation  # noqa: E402
 from macrodroid import notify_macrodroid  # noqa: E402
 from plant_care_tips import get_care_tip  # noqa: E402
 import thingsboard  # noqa: E402
+from photo_pipeline import process_photo  # noqa: E402
 from weather import get_weather_forecast  # noqa: E402
 
 app = Flask(__name__)
@@ -194,79 +195,7 @@ def upload_image():
     except Exception:
         return jsonify({"error": "could not decode image"}), 400
 
-    import numpy as np
-    rgb_array = np.array(img)
-
-    ok, reason, metrics = check_quality(rgb_array)
-    if QUALITY_GATE_ENABLED and not ok:
-        db.insert_plant_health_prediction(None, None, accepted=False, reject_reason=reason)
-        return jsonify({
-            "accepted": False,
-            "reason": reason,
-            "metrics": metrics,
-        }), 200  # not a server error - just a rejected photo, retake and resend
-
-    # Growth stage: not a trained classifier (no labeled dataset exists for
-    # this), but a CV heuristic - see growth_stage.py for why this works
-    # specifically because the camera stays in a fixed position. Crop-agnostic,
-    # so this runs regardless of which crop is currently selected.
-    current_ratio = plant_pixel_ratio(rgb_array)
-    baseline = db.get_growth_baseline()
-    if baseline is None:
-        db.set_growth_baseline(current_ratio)
-        stage = "seedling"  # first-ever accepted photo defines the baseline
-    else:
-        stage = estimate_growth_stage(current_ratio, baseline["baseline_ratio"])
-
-    # Disease detection, unlike growth stage, IS crop-specific - each model
-    # only knows the crop it was trained on (see plant_health.MODEL_PATHS).
-    # Running tomato's model against a different crop wouldn't fail cleanly -
-    # it would force-fit the photo into one of ITS classes and hand back a
-    # confident, completely wrong diagnosis. Better to say "not supported"
-    # than to guess with the wrong model.
-    latest_reading = db.latest_sensor_reading()
-    crop_type = ((latest_reading["crop_type"] if latest_reading and latest_reading["crop_type"] else "tomato")
-                 .lower())
-
-    if not plant_health.supported_crop(crop_type):
-        db.insert_plant_health_prediction(
-            predicted_class=None,
-            confidence=None,
-            accepted=False,
-            reject_reason=f"disease detection not available for crop_type={crop_type}",
-            growth_stage=stage,
-        )
-        return jsonify({
-            "accepted": False,
-            "reason": f"Disease detection isn't available for '{crop_type}' yet - "
-                      f"supported crops: {', '.join(sorted(plant_health.MODEL_PATHS))}.",
-            "growth_stage": stage,
-            "metrics": metrics,
-        })
-
-    result = plant_health.predict(img, crop_type=crop_type)
-
-    is_confident = result["label"] != "uncertain"
-    db.insert_plant_health_prediction(
-        predicted_class=result["raw_class"] or "uncertain",
-        confidence=result["confidence"],
-        accepted=is_confident,
-        reject_reason=None if is_confident else "low confidence",
-        growth_stage=stage,
-        top_predictions=result["top_predictions"],
-    )
-
-    if is_confident:   # show it on the ThingsBoard dashboard (best-effort, never raises)
-        thingsboard.push_ai_telemetry(thingsboard.plant_telemetry(
-            result["raw_class"], result["confidence"], stage,
-            get_care_tip(result["raw_class"]), plant_health.prettify_label(result["raw_class"])))
-
-    return jsonify({
-        "accepted": is_confident,
-        "prediction": result,
-        "growth_stage": stage,
-        "metrics": metrics,
-    })
+    return jsonify(process_photo(img)), 200   # a rejected photo is not a server error - retake and resend
 
 
 if __name__ == "__main__":
