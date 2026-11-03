@@ -79,7 +79,16 @@ def push_ai_telemetry(data):
     """Best-effort: publish the AI decision so a dashboard can show it. Never raises."""
     if not AI_DEVICE_TOKEN:
         return
+    data = {k: v for k, v in data.items() if v is not None}   # never overwrite good values with null
+    if not data:
+        return
     try:
         requests.post(f"{BASE}/api/v1/{AI_DEVICE_TOKEN}/telemetry", json=data, timeout=TIMEOUT)
     except Exception as e:  # noqa: BLE001
         print(f"[thingsboard] could not push AI telemetry: {e}")
+
+
+def plant_telemetry(raw_class, confidence, stage, care_tip, pretty_label):
+    """Fields shown on the dashboard's 'Plant health / Plant state / Care tip' cards."""
+    return {"ai_plant_label": pretty_label, "ai_plant_confidence": confidence,
+            "ai_plant_stage": stage, "ai_care_tip": care_tip}

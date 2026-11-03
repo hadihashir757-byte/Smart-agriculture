@@ -63,3 +63,9 @@ published as telemetry: `ai_zone_id`, `ai_decision`, `ai_seconds`, `ai_reason`, 
 | Photo: overwatered | skip |
 | Same zone watered < 30 min ago | skip |
 Photo results only count if confidence >= 0.6 and the photo is under 2 hours old.
+
+## AI cards on the Rover dashboard
+Create a ThingsBoard device `ai_server`, copy its access token into `AI_DEVICE_TOKEN` in `.env`, restart.
+The server then sends: ai_decision, ai_seconds, ai_reason, ai_status, ai_zone_id (after each zone event) and
+ai_plant_label, ai_plant_stage, ai_care_tip, ai_plant_confidence (after each accepted plant photo).
+Empty values are never sent, so a good value is not overwritten by a blank.

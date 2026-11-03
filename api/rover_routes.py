@@ -15,6 +15,7 @@ import os
 from flask import Blueprint, jsonify, request
 
 import db
+import plant_health as plant_health_mod
 import thingsboard
 import watering
 from auth import require_api_key
@@ -125,7 +126,8 @@ def zone_event():
     thingsboard.push_ai_telemetry({
         "ai_zone_id": zone_id, "ai_decision": result["decision"], "ai_seconds": result["seconds"],
         "ai_reason": result["reason"], "ai_status": status,
-        "ai_plant_label": health_summary["label"] if health_summary else None,
+        "ai_plant_label": plant_health_mod.prettify_label(health_summary["label"]) if health_summary else None,
+        "ai_plant_stage": plant_stage,
     })
 
     return jsonify({
