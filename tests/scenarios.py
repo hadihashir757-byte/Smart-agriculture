@@ -18,6 +18,7 @@ import db  # noqa: E402
 import irrigation_plan as ip  # noqa: E402
 import rover_routes as rr  # noqa: E402
 import thingsboard  # noqa: E402
+import water_amount  # noqa: E402
 from test_plan import FakeIo  # noqa: E402
 
 
@@ -36,7 +37,7 @@ AT = {"rover_link_ok": True, "rover_at_zone": True, "rover_zone": 2}
 def S(name, mode="normal", soil=25, tank=80, rain=0.0, raining=False, rover=None, crop="tomato", zone=2,
       age=10, last_water_ago=None, health=None, temp=26.0, hum=60.0,
       expect="water", why=(), run=None, outcome=None, waters=None, soils=None, refuse=None, tank_after=None,
-      report_has=None):
+      report_has=None, stage=None, total=None, turns=None, mode_run=None):
     return dict(locals())
 
 
@@ -60,10 +61,31 @@ SCENARIOS = [
       expect="water", why=("critical", "disease", "fung")),
     S("N15 plantain at 45% (mature plantain starts below 50%)", soil=45, crop="plantain", expect="water", why=("45",)),
     S("N16 zone not mapped to a pump", zone=9, expect="skip", why=("not mapped",)),
-    S("N17 rover not at the zone (station will refuse)", soil=25,
-      rover={"rover_link_ok": True, "rover_at_zone": False, "rover_zone": 1}, expect="water", why=("25",), report_has="NOT at zone"),
+    S("N17 rover not at the zone -> skip, no pump", soil=25,
+      rover={"rover_link_ok": True, "rover_at_zone": False, "rover_zone": 1}, expect="skip", run=False, why=("rover", "No pump")),
     S("N18 water-stressed plant, dry soil", soil=25, health={"label": "Tomato___water_stress", "confidence": 0.9},
       expect="water", why=("25",)),
+    S("N19 rover link lost -> skip", soil=25,
+      rover={"rover_link_ok": False, "rover_at_zone": True, "rover_zone": 2}, expect="skip", run=False, why=("link", "No pump")),
+    # ---- normal mode: how many seconds / turns ----
+    S("A01 tomato mature 25%, mild day -> 35 s in 2 turns", soil=25, expect="water", total=35, turns=[18, 17], why=("35 s", "2 turns")),
+    S("A02 tomato seedling 25% -> shorter (x0.7), 2 turns", soil=25, stage="seedling", expect="water", total=28, turns=[14, 14], why=("seedling",)),
+    S("A03 plantain mature 40% -> thirstier crop (x1.25)", soil=40, crop="plantain", expect="water", total=38, turns=[19, 19], why=("plantain", "1.25")),
+    S("A04 pepper mature 20% -> x0.85", soil=22, crop="pepper", expect="water", total=32, turns=[16, 16], why=("pepper", "0.85")),
+    S("A05 hot day 35 C -> x1.2", soil=25, temp=35, expect="water", total=42, turns=[14, 14, 14], why=("hot day", "1.2")),
+    S("A06 cool humid day -> less water", soil=25, temp=15, hum=90, expect="water", total=27, turns=[14, 13], why=("cool day", "humid air")),
+    S("A07 hot and dry air -> x1.2 x1.1", soil=25, temp=34, hum=25, expect="water", total=46, turns=[16, 15, 15], why=("dry air",)),
+    S("A08 completely dry 0% -> 60 s (the maximum) in 3 turns", soil=0, expect="water", total=60, turns=[20, 20, 20], why=("60 s", "3 turns")),
+    S("A09 rain coming, soil 30% -> short top-up in 1 turn", soil=30, rain=8, expect="water", total=15, turns=[15], why=("short top-up", "1 turn")),
+    S("A10 water-stressed plant -> +5 s", soil=25, health={"label": "Tomato___water_stress", "confidence": 0.9},
+      expect="water", total=40, turns=[20, 20], why=("water stress",)),
+    S("A11 fungal disease but soil critical -> gentle", soil=15, health={"label": "Tomato___Late_blight", "confidence": 0.9},
+      expect="water", total=15, turns=[15], why=("disease", "gentle", "fung")),
+    # ---- normal mode: running the turns ----
+    S("T01 two turns, soil still low after turn 1", soil=25, expect="water", mode_run="turns", soils=[45], outcome="done", waters=[18, 17], why=("turns",)),
+    S("T02 soil reaches target after turn 1 -> stops early", soil=25, expect="water", mode_run="turns", soils=[62], outcome="reached", waters=[18], why=("turns",)),
+    S("T03 tank runs low between turns -> stops", soil=10, expect="water", mode_run="turns", soils=[30], tank_after=10, outcome="tank_low", waters=[17], why=("turns",)),
+    S("T04 station refuses turn 1 (rover moved)", soil=25, expect="water", mode_run="turns", refuse=1, outcome="refused", waters=[18], why=("turns",)),
     # ---------------- demo mode: plan ----------------
     S("D01 demo, dry 30%, no rain -> 3 s x3 then up to 80%", mode="demo", soil=30, expect="water", run=True,
       why=("3 s", "80%", "three times")),
@@ -104,8 +126,9 @@ def run(sc, monkeypatch=None):
     if sc["tank"] is None:
         st.pop("tank_level_percent")
     health = None
-    if sc["health"]:
-        health = {"predicted_class": sc["health"]["label"], "confidence": sc["health"]["confidence"], "growth_stage": "mature"}
+    if sc["health"] or sc["stage"]:
+        h = sc["health"] or {"label": "Tomato___healthy", "confidence": 0.9}
+        health = {"predicted_class": h["label"], "confidence": h["confidence"], "growth_stage": sc["stage"] or "mature"}
     patches = [
         (rr, "get_weather_forecast", lambda: {"rain_mm": sc["rain"]}),
         (rr.thingsboard, "configured", lambda: True),
@@ -138,7 +161,7 @@ def run(sc, monkeypatch=None):
                 io.tank_v = sc["tank_after"]
                 return orig()
             io.measure_soil = measure
-        out["result"] = ip.run_plan(res["plan"], io)
+        out["result"] = (water_amount.run_turns if res["plan"].get("kind") == "turns" else ip.run_plan)(res["plan"], io)
         out["io"] = io
     return out
 
@@ -159,6 +182,10 @@ def check(sc, out):
         bad.append("no plan")
     if sc["run"] is False and out["plan"]:
         bad.append("a pump plan was created but should not exist")
+    if sc["total"] is not None:
+        plan = out["plan"] or {}
+        if plan.get("total_s") != sc["total"] or plan.get("turns") != sc["turns"]:
+            bad.append(f"amount {plan.get('total_s')} s in turns {plan.get('turns')} (wanted {sc['total']} s, {sc['turns']})")
     if sc["outcome"]:
         if not out["result"] or out["result"]["outcome"] != sc["outcome"]:
             bad.append(f"outcome {out['result'] and out['result']['outcome']} (wanted {sc['outcome']})")
@@ -166,8 +193,9 @@ def check(sc, out):
             secs = [e[2] for e in out["io"].events if e[0] == "water"]
             if secs != sc["waters"]:
                 bad.append(f"pump runs {secs} (wanted {sc['waters']})")
-            if out["io"].holds != [True, False]:
-                bad.append(f"rover hold calls {out['io'].holds}")
+            h = out["io"].holds
+            if not h or h[-1] is not False or h[0] is not True or False in h[:-1]:
+                bad.append(f"rover hold calls {h}")
     return bad
 
 

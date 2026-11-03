@@ -18,6 +18,9 @@ from flask import Blueprint, jsonify, request
 import db
 import explain
 import irrigation_plan
+import irrigation_rules
+import plan_runner
+import water_amount
 import plant_health as plant_health_mod
 import thingsboard
 import watering
@@ -83,40 +86,47 @@ def evaluate_zone(zone_id, readings, crop_type, tank_hint=None):
         plant_health=health_summary,
     )
 
-    command_id = result["command"]["params"]["command_id"] if result["command"] else None
+    # The station only waters while the rover is stopped AT this zone - say so here too (same rule as demo mode).
+    block = irrigation_plan.rover_block_text(zone_id, rover)
+    if result["decision"] == "water" and block:
+        result = {**result, "decision": "skip", "seconds": 0, "command": None, "reason": block}
+
+    plan = None
+    if result["decision"] == "water":
+        soil = readings.get("soil_moisture_percent")
+        rain_soon = rain_mm >= irrigation_rules.RAIN_SKIP_THRESHOLD_MM and soil >= irrigation_rules.CRITICAL_SOIL_PCT
+        plan = water_amount.make_turn_plan(
+            zone_id, result["pump"], soil, crop_type, plant_stage, readings.get("temperature_c"),
+            readings.get("humidity_percent"), rain_soon, result["seconds"], result.get("base_reason", ""), health_summary)
+        result = {**result, "seconds": plan["total_s"],
+                  "reason": f"{result.get('base_reason', result['reason'])}. {plan['text']}"}
+
     row_id = db.insert_watering_decision(
-        zone_id, result["pump"], result["seconds"], result["decision"], result["reason"], command_id,
+        zone_id, result["pump"], result["seconds"], result["decision"], result["reason"], None,
         "skipped" if result["decision"] == "skip" else ("recommended" if not AUTO_WATER else "pending"),
-        result["inputs"],
+        {**result["inputs"], "plan": {k: v for k, v in plan.items() if k != "text"} if plan else None},
     )
 
-    status, station_reply = ("skipped" if result["decision"] == "skip" else "dry_run"), None
-    if result["decision"] == "water" and AUTO_WATER:
+    status = "skipped" if result["decision"] == "skip" else "dry_run"
+    if plan and AUTO_WATER:
         if not thingsboard.configured():
             status = "send_failed"
             result["reason"] += " | AUTO_WATER is on but TB_USERNAME/TB_PASSWORD are not set"
         else:
-            try:
-                station_reply = thingsboard.send_rpc(thingsboard.STATION_DEVICE_NAME,
-                                                     result["command"]["method"], result["command"]["params"])
-                status = "sent_accepted" if station_reply.get("accepted") else "sent_rejected"
-            except Exception as e:  # noqa: BLE001
-                status = "send_failed"
-                result["reason"] += f" | could not reach the station: {e}"
+            status = "plan_ready"       # the agent (or the background runner below) executes the turns
     if result["decision"] == "water" or status != "skipped":
-        db.update_watering_decision(row_id, status, station_reply)
+        db.update_watering_decision(row_id, status, None)
 
     checks = explain.checks_line(zone_id, readings.get("soil_moisture_percent"),
                                  None if tank_percent is None else float(tank_percent), rain_mm,
-                                 bool(readings.get("rain_detected")), rover, _age(readings), demo=False)
-    why = result["reason"].rstrip(".")
-    if result["decision"] == "water":
-        why += f". Water for {result['seconds']} s."
-        if rover is not None and not (rover["link_ok"] and rover["at_zone"] and rover["zone"] == zone_id):
-            why += f" The station will refuse until the rover is stopped at zone {zone_id}, so no pump starts before that."
+                                 bool(readings.get("rain_detected")), rover, _age(readings),
+                                 plan["target"] if plan else None, demo=False)
+    why = plan["text"] if plan else result["reason"]
     thingsboard.push_ai_telemetry({
         "ai_zone_id": zone_id, "ai_decision": result["decision"], "ai_seconds": result["seconds"],
-        "ai_reason": result["reason"], "ai_status": status,
+        "ai_turns": len(plan["turns"]) if plan else 0,
+        "ai_reason": result["reason"], "ai_explanation": why, "ai_status": status,
+        "ai_target_percent": plan["target"] if plan else None,
         "ai_report": explain.report(checks, "water" if result["decision"] == "water" else "do not water", why),
         "ai_plant_label": plant_health_mod.prettify_label(health_summary["label"]) if health_summary else None,
         "ai_plant_stage": plant_stage,
@@ -124,9 +134,9 @@ def evaluate_zone(zone_id, readings, crop_type, tank_hint=None):
 
     return {
         "decision": result["decision"], "zone_id": zone_id, "pump": result["pump"],
-        "seconds": result["seconds"], "reason": result["reason"], "status": status,
-        "auto_water": AUTO_WATER, "station_reply": station_reply, "tank_note": tank_note or None,
-        "plant_health": health_summary,
+        "seconds": result["seconds"], "turns": plan["turns"] if plan else [], "reason": result["reason"],
+        "status": status, "auto_water": AUTO_WATER, "station_reply": None, "tank_note": tank_note or None,
+        "plant_health": health_summary, "plan": plan,
     }
 
 
@@ -195,7 +205,10 @@ def zone_event():
         return jsonify({"error": str(e)}), 400
 
     crop_type = str(payload.get("crop_type") or DEFAULT_CROP).lower()
-    return jsonify(evaluate_zone(zone_id, readings, crop_type, payload.get("tank_level_percent")))
+    result = evaluate_zone(zone_id, readings, crop_type, payload.get("tank_level_percent"))
+    if result.get("plan") and result["auto_water"] and result["status"] == "plan_ready":
+        result["status"] = "plan_started" if plan_runner.start_in_background(result["plan"]) else "plan_busy"
+    return jsonify(result)
 
 
 @bp.route("/decisions", methods=["GET"])

@@ -174,7 +174,7 @@ def test_demo_plan_is_executed_by_the_agent():
         ran.append(plan)
         return {"outcome": "reached", "summary": "done"}
     out = agent.handle_soil(rover(), NOW, fake_eval, run_plan=fake_run)
-    assert ran and "demo plan reached" in out
+    assert ran and "plan reached" in out
 
 
 def test_demo_plan_is_not_executed_without_auto_water():

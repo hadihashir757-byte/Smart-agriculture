@@ -120,6 +120,7 @@ def decide(zone_id, readings, crop_type="tomato", plant_stage="mature", rain_for
     if not rec["water"]:
         return _skip(zone_id, rec["reason"], inputs)
 
+    base_reason = rec["reason"]
     seconds, note, skip_reason = _health_adjust(int(rec["duration_sec"]), soil, plant_health)
     if skip_reason:
         return _skip(zone_id, skip_reason, inputs)
@@ -130,4 +131,4 @@ def decide(zone_id, readings, crop_type="tomato", plant_stage="mature", rain_for
                "params": {"pump": pump, "seconds": seconds,
                           "command_id": command_id, "issued_at": int(now)}}
     return {"decision": "water", "zone_id": zone_id, "pump": pump, "seconds": seconds,
-            "reason": rec["reason"], "command": command, "inputs": inputs}
+            "reason": rec["reason"], "base_reason": base_reason, "command": command, "inputs": inputs}

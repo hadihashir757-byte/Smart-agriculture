@@ -26,6 +26,18 @@ TANK_MIN_PCT = 15
 SOIL_WAIT_S = 60            # how long to wait for the rover to deliver a new soil reading
 
 
+def rover_block_text(zone_id, rover):
+    """None when the rover is stopped at this zone (or unknown - the station then checks). Otherwise why no pump may start."""
+    if rover is None:
+        return None
+    if not rover.get("link_ok"):
+        return f"Zone {zone_id}: the rover link is lost, so the AI cannot confirm the rover is at the zone. No pump is turned on."
+    if not rover.get("at_zone") or rover.get("zone") != zone_id:
+        at = f"zone {rover.get('zone')}" if rover.get("zone") else "no zone"
+        return f"Zone {zone_id}: the rover is not stopped at zone {zone_id} (it reports {at}). No pump is turned on."
+    return None
+
+
 def make_plan(zone_id, pump, soil, rain_mm, rain_detected, tank_percent, rain_soon_mm=5.0, rover=None):
     """Returns {'run': bool, 'text': str, ...}. 'text' is the explanation shown on the dashboard."""
     if rain_detected:
@@ -38,13 +50,9 @@ def make_plan(zone_id, pump, soil, rain_mm, rain_detected, tank_percent, rain_so
     if soil is None:
         return {"run": False, "zone_id": zone_id, "text": f"Zone {zone_id}: no soil reading yet, so the AI is not watering."}
 
-    if rover is not None:
-        if not rover.get("link_ok"):
-            return {"run": False, "zone_id": zone_id, "text": f"Zone {zone_id}: the rover link is lost, so the AI cannot confirm the rover is at the zone. No pump is turned on."}
-        if not rover.get("at_zone") or rover.get("zone") != zone_id:
-            at = f"zone {rover.get('zone')}" if rover.get("zone") else "no zone"
-            return {"run": False, "zone_id": zone_id,
-                    "text": f"Zone {zone_id}: the rover is not stopped at zone {zone_id} (it reports {at}). No pump is turned on."}
+    block = rover_block_text(zone_id, rover)
+    if block:
+        return {"run": False, "zone_id": zone_id, "text": block}
 
     rain = rain_mm >= rain_soon_mm
     target = RAIN_TARGET_PCT if rain else DEMO_TARGET_PCT
@@ -117,6 +125,7 @@ def _run_plan(plan, io):
     say(plan["text"], ai_phase="planned", ai_target_percent=target)
 
     def start(seconds):
+        io.hold(True)                  # refresh the "stay at the zone" request (the rover releases it after 5 min)
         reply = io.water(pump, seconds)
         if not reply.get("accepted"):
             why = reply.get("reason", "unknown")
