@@ -163,3 +163,24 @@ def test_camera_messages(monkeypatch):
     monkeypatch.setattr(camera.requests, "get", down)
     with pytest.raises(RuntimeError, match="same Wi-Fi"):
         camera.fetch_snapshot()
+
+
+def test_demo_plan_is_executed_by_the_agent():
+    ran = []
+    def fake_eval(zone_id, readings, crop):
+        return {"decision": "water", "seconds": 3, "status": "plan_ready", "reason": "x", "auto_water": True,
+                "plan": {"run": True, "zone_id": zone_id}}
+    def fake_run(plan):
+        ran.append(plan)
+        return {"outcome": "reached", "summary": "done"}
+    out = agent.handle_soil(rover(), NOW, fake_eval, run_plan=fake_run)
+    assert ran and "demo plan reached" in out
+
+
+def test_demo_plan_is_not_executed_without_auto_water():
+    ran = []
+    def fake_eval(zone_id, readings, crop):
+        return {"decision": "water", "seconds": 3, "status": "dry_run", "reason": "x", "auto_water": False,
+                "plan": {"run": True, "zone_id": zone_id}}
+    out = agent.handle_soil(rover(), NOW, fake_eval, run_plan=lambda p: ran.append(p))
+    assert not ran and "dry_run" in out

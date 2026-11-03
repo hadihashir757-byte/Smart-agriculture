@@ -22,3 +22,9 @@ NOT tested against a live ThingsBoard account or the real station - test with AU
 - Rain forecast >= 5 mm: skip if soil >= 40%, otherwise a short top-up (max 15 s). Critical (<20%) still waters.
 - Plant-health photo result now matters (confident >= 0.6 and fresh): disease -> skip (gentle 15 s max if soil <20%), water stress -> +5 s, overwatered -> skip.
 - Tank level unreadable -> skip (when ThingsBoard is configured).
+
+## Demo mode plans, manual pumps, dashboard switches
+- api/irrigation_plan.py: in station DEMO mode the AI builds a plan: no rain = pump 3 s / wait 5 s x3, then bursts until 80 %;
+  rain expected = pump 5 s / wait 8 s x2, then bursts until 40 %. Runs only when AUTO_WATER=true (agent executes it). Explanation text goes to ThingsBoard as ai_explanation / ai_progress.
+- Station firmware v0.5: setPump1/2 manual switches (no timer, bypass tank/rover/rest checks; E-stop still stops them), setDemo/getDemo, setLive/getLive; demo also turns on 5 s data.
+- Rover r13: setLive/getLive, 5-min cloud updates, immediate control reports.

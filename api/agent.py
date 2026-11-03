@@ -25,6 +25,7 @@ import time
 
 import camera
 import db
+import irrigation_plan
 import thingsboard
 import watering
 
@@ -61,7 +62,7 @@ def _state_float(key):
         return 0.0
 
 
-def handle_soil(rover, now, evaluate_zone):
+def handle_soil(rover, now, evaluate_zone, run_plan=None):
     """Returns a short text describing what happened (also used by tests)."""
     if "soil_moisture_percent" not in rover:
         return "no soil measurement yet"
@@ -91,7 +92,59 @@ def handle_soil(rover, now, evaluate_zone):
         "reading_ts": ts_ms / 1000.0,
     }
     result = evaluate_zone(zone_id, readings, DEFAULT_CROP)
+    if result.get("plan") and result.get("auto_water") and run_plan is not False:
+        outcome = (run_plan or _run_demo_plan)(result["plan"])
+        return f"zone {zone_id}: demo plan {outcome['outcome']} - {outcome['summary']}"
     return f"zone {zone_id}: {result['decision']} {result['seconds']}s [{result['status']}] - {result['reason']}"
+
+
+class _RealIo(irrigation_plan.Io):
+    """Talks to the real station and rover through ThingsBoard."""
+
+    def __init__(self, zone_id):
+        self.zone_id = zone_id
+
+    def water(self, pump, seconds):
+        params = {"pump": pump, "seconds": seconds, "command_id": irrigation_plan.new_command_id(),
+                  "issued_at": int(time.time())}
+        try:
+            reply = thingsboard.send_rpc(thingsboard.STATION_DEVICE_NAME, "water", params)
+        except Exception as e:  # noqa: BLE001
+            return {"accepted": False, "reason": f"could not reach the station: {e}"}
+        db.insert_watering_decision(self.zone_id, pump, seconds, "water", "demo plan step", params["command_id"],
+                                    "sent_accepted" if reply.get("accepted") else "sent_rejected",
+                                    {"demo": True})
+        return reply
+
+    def measure_soil(self):
+        t0 = int(time.time() * 1000)
+        try:
+            thingsboard.send_rpc(ROVER_DEVICE_NAME, "measureSoil", {})
+        except Exception as e:  # noqa: BLE001
+            log(f"could not ask the rover to measure soil: {e}")
+        deadline = time.time() + irrigation_plan.SOIL_WAIT_S
+        while time.time() < deadline:
+            time.sleep(3)
+            got = thingsboard.latest_with_ts(ROVER_DEVICE_NAME, ["soil_moisture_percent"]).get("soil_moisture_percent")
+            if got and got[1] > t0:
+                db.set_state("last_soil_ts", got[1])      # so the normal check does not handle this reading again
+                return _float(got[0])
+        return None
+
+    def tank(self):
+        return _float(thingsboard.latest_telemetry(thingsboard.STATION_DEVICE_NAME, ["tank_level_percent"]).get("tank_level_percent"))
+
+    def demo_on(self):
+        v = thingsboard.latest_telemetry(thingsboard.STATION_DEVICE_NAME, ["demo_mode"]).get("demo_mode")
+        return str(v).strip().lower() in ("true", "1")
+
+    def say(self, text, **extra):
+        log(f"[plan] {text}")
+        thingsboard.push_ai_telemetry({"ai_zone_id": self.zone_id, "ai_explanation": text, "ai_progress": text, **extra})
+
+
+def _run_demo_plan(plan):
+    return irrigation_plan.run_plan(plan, _RealIo(plan["zone_id"]))
 
 
 def handle_photo(rover, now, process_photo=None, fetch=None):
