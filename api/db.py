@@ -254,3 +254,25 @@ def recent_watering_decisions(limit=50):
     ).fetchall()
     conn.close()
     return [dict(r) for r in rows]
+
+
+# ---- small key/value state for the background agent (survives restarts) ----
+def _ensure_state_table(conn):
+    conn.execute("CREATE TABLE IF NOT EXISTS agent_state (key TEXT PRIMARY KEY, value TEXT)")
+
+
+def get_state(key, default=None):
+    conn = get_connection()
+    _ensure_state_table(conn)
+    row = conn.execute("SELECT value FROM agent_state WHERE key = ?", (key,)).fetchone()
+    conn.close()
+    return row["value"] if row else default
+
+
+def set_state(key, value):
+    conn = get_connection()
+    _ensure_state_table(conn)
+    conn.execute("INSERT INTO agent_state (key, value) VALUES (?, ?) "
+                 "ON CONFLICT(key) DO UPDATE SET value = excluded.value", (key, str(value)))
+    conn.commit()
+    conn.close()

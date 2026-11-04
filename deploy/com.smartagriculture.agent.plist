@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.smartagriculture.agent</string>
+  <key>WorkingDirectory</key><string>__HOME__/Smart-agriculture/api</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/zsh</string>
+    <string>-c</string>
+    <string>set -a; source __HOME__/Smart-agriculture/.env; set +a; exec __HOME__/Smart-agriculture/venv/bin/python agent.py</string>
+  </array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>StandardOutPath</key><string>__HOME__/Smart-agriculture/agent.log</string>
+  <key>StandardErrorPath</key><string>__HOME__/Smart-agriculture/agent.log</string>
+</dict>
+</plist>
