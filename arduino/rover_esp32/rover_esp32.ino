@@ -1,5 +1,9 @@
 // ============================================================
-//  AI Smart Agriculture - ROVER firmware (ESP32)  v1.0z
+//  AI Smart Agriculture - ROVER firmware (ESP32)  r15
+//  ROUTE (line mode), r16:  centre (plain tape, 010) -> forward -> ZONE 1 (tape ends) -> stay 1 min
+//        -> reverse to the centre (distance estimate), wait 2 s -> reverse on to ZONE 2 (cross-tape 111) -> stay 1 min
+//        -> forward to the centre -> stop and switch LINE mode OFF.
+//        Rain above 15 %: stop, go back to the centre, send an alarm, LINE mode OFF.  See the ROUTE settings below.
 //  Sensors : DHT11/DHT22 (1 wire, GPIO21), LDR, rain module, capacitive soil sensor
 //  Probe   : soil sensor on a servo arm (retracted while driving)
 //  Drive   : 2 DC motors via L298N, 3 IR line sensors
@@ -133,26 +137,51 @@
 #define TURN_SPEED_PWM      200
 #define TURN_MS_PER_DEG     7.0f   // CALIBRATE: milliseconds of turning per degree (see the guide), or use RPC setTurnCal
 #define TURN_STEP_DEG       15     // one press of Left / Right = this many degrees
-#define SPEED_LINE       150    // line following speed (start low!)
-#define SPEED_LINE_TURN  130
+#define SPEED_LINE       120    // line following speed (slow, the rover carries a load). Below about 110 the motors may only hum
+#define SPEED_LINE_TURN  120
 
 // ---------- Safety / timing ----------
 #define MANUAL_TIMEOUT_MS   600    // manual move stops if no new command in this time
 #define MANUAL_MAX_RUN_MS   600000 // forward/backward from the dashboard keeps going until Stop, but never longer than this (0 = no limit)
 #define LINK_LOST_STOP_MS   2000   // ...and it stops if Wi-Fi / ThingsBoard is lost. Wi-Fi loss: at once. Cloud-only loss: noticed in about 5-10 s (MQTT keep-alive)
-#define TELEMETRY_MS        3000   // send sensors every 3 s
+#define TELEMETRY_MS        3000   // link to the irrigation station: every 3 s over your home Wi-Fi (free)
+#define CLOUD_IDLE_MS     300000   // ThingsBoard, normal: ALL values every 5 minutes
+#define CLOUD_LIVE_MS       5000   // ThingsBoard, LIVE (demo) mode: ALL values every 5 seconds
+#define LIVE_MAX_MS      1800000UL // live mode switches itself OFF after 30 minutes (protects the free ThingsBoard limits)
 #define SENSOR_READ_MS      1000   // read sensors every 1 s (so each upload is fresh)
 #define MQTT_RETRY_MS       5000
 #define WIFI_RETRY_MS       10000
 
-// ---------- Zone handling (line following) ----------
-// When BOTH IR sensors see black (a cross-line on the floor), the rover
-// treats it as a crop-zone marker: stops, sends telemetry, waits, continues.
-#define ZONE_PHOTO_WAIT_MS  5000   // wait at zone for the phone photo BEFORE the probe lowers
-#define ZONE_IGNORE_MS      2000   // ignore marker right after leaving one
-#define MAX_ZONES           3      // after the last zone the rover stops
-#define ZONE_TIMEOUT_MS     120000  // no zone marker found within this time -> stop + alert (line lost / stuck)
-#define LINE_LOST_MS        3000   // all three sensors see white for this long -> stop + alert
+// ---------- ROUTE (line following) ----------
+//   Floor layout (tape):   ZONE 2 (cross-tape) ---- CENTRE (plain tape, reads 010) ---- ZONE 1 (tape ends)
+//   The CENTRE cannot be seen by the sensors, so the rover ESTIMATES how far it has driven (speed x time).
+//   Route: centre -> forward -> zone 1 (stay) -> reverse to the centre (pause) -> reverse to zone 2 (stay)
+//          -> forward to the centre -> stop, LINE mode OFF.
+#define ZONE_STAY_MS          60000   // minimum time spent at each zone (readings + AI irrigation). 60000 = 1 minute
+#define ZONE_PHOTO_WAIT_MS    15000   // wait at the zone for the phone photo BEFORE the soil probe lowers (the server photographs on arrival)
+#define CENTRE_PAUSE_MS        2000   // pause at the centre while reversing from zone 1 to zone 2
+#define OUT_MIN_MS             1500   // outward leg: a tape END is only believed after this much driving
+#define ZONE1_END_CONFIRM_MS    200   // sensors must read 000 this long after a straight run to count as "tape ended"
+#define ZONE2_CREEP_MS            0   // reverse a little further after seeing zone 2's cross-tape (0 = stop on it at once)
+#define BACK_FIND_MS           4000   // after leaving zone 1 the sensors are past the end of the tape; reverse straight this long to find it
+#define ZONE_TIMEOUT_MS      120000   // one leg may take at most this long -> stop + alert (line lost / stuck)
+#define LINE_LOST_MS           3000   // all three sensors see white for this long (mid-route) -> stop + alert
+#define CROSS_DEBOUNCE_MS       400   // zone 2's cross-tape must be seen as 111 only after the sensors left the previous black area
+// --- distance estimate (needed to find the centre). MEASURE these once with a ruler and a stopwatch: ---
+//   let the rover drive 1 metre in line mode (watch the Serial Monitor) and note the seconds -> cm per second.
+#define FWD_SPEED_CM_S        8.0f    // real forward speed at SPEED_LINE, in cm per second
+#define REV_SPEED_CM_S        6.0f    // real reverse speed at SPEED_REVERSE, in cm per second (only the ratio to the forward speed really matters)
+#define ZONE1_DIST_CM           0     // if you know the distance centre -> zone 1 in cm, enter it (0 = the rover measures it on the way out)
+#define ZONE2_DIST_CM           0     // distance centre -> zone 2 in cm (0 = measured)
+// --- rain ---
+#define RAIN_RETURN_PERCENT    15     // rain intensity above this (%) for RAIN_CONFIRM_MS: stop, go back to the centre, alarm, LINE mode off
+#define RAIN_CONFIRM_MS      2000
+// --- soft start: slow, smooth speed-up because of the load ---
+#define LINE_RAMP_PWM_PER_S   150     // how fast the motor power may rise (PWM units per second). 150 = from 0 to 120 in about 0.8 s
+// Reverse driving (sensors are on the FRONT, so reversing wobbles more: keep it SLOW, then tune)
+#define SPEED_REVERSE           115   // reverse line-following speed (PWM 0-255). Motors may hum below about 110
+#define SPEED_REVERSE_TURN      130   // steering speed while reversing (the outer wheel; the inner wheel stops)
+#define REVERSE_FLIP_STEERING  true   // true = left/right sensors steer the opposite way when reversing (normal for front sensors). If the rover runs OFF the tape in reverse, set false
 // ===================== END OF SETTINGS =====================
 
 // ---------------- Types / state ----------------
@@ -160,6 +189,7 @@ enum Mode  { MODE_MANUAL, MODE_LINE };
 enum Drive { D_STOP, D_FWD, D_BACK, D_LEFT, D_RIGHT };
 enum Probe { P_IDLE, P_LOWERING, P_SETTLE, P_MEASURE, P_HOLD, P_RAISING };
 enum ZoneStage { ZS_PHOTO, ZS_PROBE };
+enum RoutePhase { RP_OUT, RP_STAY1, RP_BACK, RP_STAY2, RP_HOME, RP_RET_REV, RP_DONE };
 
 Mode   mode = MODE_MANUAL;       // start safe: manual, motors stopped
 Drive  manualDir = D_STOP;
@@ -180,6 +210,46 @@ unsigned long zoneStartMs = 0, zoneLeftMs = 0;
 bool routeFinished = false;
 int  lastTurn = 0;                    // -1 = line was last seen on the left, +1 = right
 unsigned long lineLostSince = 0;      // 0 = line currently seen
+RoutePhase phase = RP_OUT;
+unsigned long phaseStartMs = 0;
+bool onCross = true;                  // sensors are on a cross-tape right now
+unsigned long crossEndMs = 0;
+bool lastWasCentre = false;           // last line pattern was 010 (straight on the tape)
+bool foundLine = false;               // the tape has been seen in this leg
+unsigned long creepUntilMs = 0;
+float posCm = 0;                      // estimated position on the line: 0 = centre, + toward zone 1, - toward zone 2
+float zone1Cm = 0;
+float fwdScale = 1.0f;                // learned from the outward leg when ZONE1_DIST_CM is known (corrects the forward speed estimate)
+unsigned long lastStepMs = 0;
+unsigned long centrePauseUntilMs = 0;
+bool centrePauseDone = false;
+bool rainAbort = false;               // rain made the rover return to the centre (stays true until the next route)
+unsigned long rainSince = 0;
+uint32_t arrivalId = 0;               // new random number at every arrival at a zone (the server takes one photo per id)
+
+const char *phaseName() {
+  switch (phase) {
+    case RP_OUT:     return "to_zone1";
+    case RP_STAY1:   return "at_zone1";
+    case RP_BACK:    return centrePauseDone ? "reverse_to_zone2" : "reverse_to_centre";
+    case RP_STAY2:   return "at_zone2";
+    case RP_HOME:    return "to_centre";
+    case RP_RET_REV: return "to_centre";
+    default:         return "finished";
+  }
+}
+
+void startPhase(RoutePhase p) {
+  phase = p;
+  phaseStartMs = millis();
+  zoneLeftMs = phaseStartMs;
+  lastStepMs = phaseStartMs;
+  lineLostSince = 0; lastTurn = 0;
+  onCross = true; crossEndMs = phaseStartMs;
+  lastWasCentre = false; foundLine = false; creepUntilMs = 0;
+  centrePauseUntilMs = 0; centrePauseDone = false;
+  Serial.printf("[ROUTE] %s (position %.0f cm)\n", phaseName(), posCm);
+}
 
 // ---- safety state ----
 bool estop = false;                 // latched emergency stop
@@ -222,6 +292,11 @@ WebServer    web(80);
 unsigned long tSensor = 0, tTelemetry = 0, tMqtt = 0, tWifi = 0;
 
 void sendTelemetry(const char *reason);   // forward declaration
+bool zoneHold = false;                    // the AI asked the rover to stay at the zone while it waters
+unsigned long zoneHoldUntilMs = 0;
+#define ZONE_HOLD_MAX_MS 300000UL         // never hold longer than 5 minutes
+bool liveMode = false;                    // LIVE (demo) data mode - OFF after every reset
+unsigned long liveUntilMs = 0;
 const char *driveName();                  // forward declaration
 void updateTouch();                       // forward declaration
 
@@ -257,7 +332,9 @@ void setMotor(int inA, int chA, int inB, int chB, int speed) {
   pwmWrite(inB, chB, speed < 0 ? -speed : 0);
 }
 
+int curL = 0, curR = 0;                        // last wheel command (before the INVERT flags)
 void setMotors(int left, int right) {
+  curL = left; curR = right;
   if (INVERT_LEFT)  left  = -left;
   if (INVERT_RIGHT) right = -right;
   setMotor(PIN_IN1, 4, PIN_IN2, 5, left);
@@ -467,8 +544,9 @@ void sendStationUdp(const char *reason) {
   d["mode"] = (mode == MODE_LINE) ? "line" : "manual";
   d["estop"] = estop;
   d["event"] = reason;
+  d["live"] = liveMode;
   if (lastSoilPct >= 0) { d["soil_pct"] = (int)(lastSoilPct + 0.5f); d["soil_zone"] = lastSoilZone; }
-  char b[300];
+  char b[340];
   size_t n = serializeJson(d, b, sizeof(b));
   IPAddress target;
   if (strlen(STATION_IP) > 0 && target.fromString(STATION_IP)) { /* fixed IP */ }
@@ -479,7 +557,7 @@ void sendStationUdp(const char *reason) {
 }
 
 void sendTelemetry(const char *reason) {
-  sendStationUdp(reason);                           // local copy for the irrigation station
+  if (strcmp(reason, "periodic") != 0) sendStationUdp(reason);   // local copy for the station (the 3 s timer sends the periodic ones)
   if (!mqtt.connected()) return;
   JsonDocument doc;
   doc["device_id"] = DEVICE_ID;
@@ -514,8 +592,15 @@ void sendTelemetry(const char *reason) {
     if (sensors.soilValid && SOIL_CALIBRATED) doc["soil_moisture_percent"] = sensors.soilPercent;
   }
   doc["event"] = reason;
+  doc["live_mode"] = liveMode;
+  doc["zone_hold"] = zoneHold;
+  doc["route_phase"] = phaseName();
+  doc["route_pos_cm"] = (int)(posCm + (posCm >= 0 ? 0.5f : -0.5f));
+  doc["rain_abort"] = rainAbort;
+  doc["at_zone"] = atZone;
+  if (atZone) doc["arrival_id"] = arrivalId;
   doc["rssi"] = WiFi.RSSI();
-  char buf[720];
+  char buf[1100];
   size_t n = serializeJson(doc, buf, sizeof(buf));
   mqtt.publish("v1/devices/me/telemetry", (const uint8_t *)buf, n, false);
   Serial.printf("[TB] %s\n", buf);
@@ -528,7 +613,7 @@ void setMode(Mode m) {
   stopMotors();
   manualDir = D_STOP;
   manualRunUntilMs = 0;
-  if (m == MODE_LINE) { routeFinished = false; atZone = false; lineTimeout = false; lineLostSince = 0; lastTurn = 0; zoneLeftMs = millis(); zoneIndex = 0; lastSoilPct = -1; }
+  if (m == MODE_LINE) { routeFinished = false; atZone = false; lineTimeout = false; zoneIndex = 0; lastSoilPct = -1; rainAbort = false; rainSince = 0; posCm = 0; zone1Cm = 0; fwdScale = 1.0f; startPhase(RP_OUT); }
   Serial.printf("[MODE] %s\n", m == MODE_LINE ? "LINE" : "MANUAL");
 }
 
@@ -656,7 +741,10 @@ void onMqtt(char *topic, byte *payload, unsigned int len) {
   else if (!strcmp(method, "setMode"))      setMode(pOn ? MODE_LINE : MODE_MANUAL);
   else if (!strcmp(method, "setValue"))     setMode(pOn ? MODE_LINE : MODE_MANUAL);   // ThingsBoard switch widget (ON = line)
   else if (!strcmp(method, "getValue"))     { /* switch asks for its state: answered below */ }
-  else if (!strcmp(method, "measureSoil"))  { if (mode == MODE_MANUAL) probeStart(); }
+  else if (!strcmp(method, "measureSoil"))  { if (mode == MODE_MANUAL || atZone) probeStart(); }   // also while stopped at a zone (the AI re-measures after each watering turn)
+  else if (!strcmp(method, "setLive"))      { liveMode = pOn; liveUntilMs = millis() + LIVE_MAX_MS; sendTelemetry("live_changed"); }
+  else if (!strcmp(method, "getLive"))      { /* answered below */ }
+  else if (!strcmp(method, "holdZone"))     { zoneHold = pOn; zoneHoldUntilMs = millis() + ZONE_HOLD_MAX_MS; Serial.printf("[HOLD] stay at zone: %s\n", zoneHold ? "YES (max 5 min)" : "no"); }
   else if (!strcmp(method, "estop"))        estopSet();
   else if (!strcmp(method, "clearEstop"))   estopClear();
   else Serial.printf("[RPC] UNKNOWN method '%s' - check the button's method name (it is case sensitive)\n", method);
@@ -670,80 +758,224 @@ void onMqtt(char *topic, byte *payload, unsigned int len) {
   else if (!strcmp(method, "getSpeed") || !strcmp(method, "setSpeed")) resp = String(manualSpeedPct);
   else if (!strcmp(method, "getSafety") || !strcmp(method, "setSafety")) resp = speedLocked ? "true" : "false";
   else if (!strcmp(method, "getTurnCal") || !strcmp(method, "setTurnCal")) resp = String(turnMsPerDeg, 2);
+  else if (!strcmp(method, "getLive") || !strcmp(method, "setLive")) resp = liveMode ? "true" : "false";
+  else if (!strcmp(method, "holdZone")) resp = zoneHold ? "true" : "false";
   mqtt.publish(respTopic.c_str(), resp.c_str());
+  // Rover controls are reported to ThingsBoard IMMEDIATELY (estop / clearEstop / measureSoil send their own report)
+  if (!strcmp(method, "move") || !strcmp(method, "turn") || !strcmp(method, "setSpeed") || !strcmp(method, "setSafety") ||
+      !strcmp(method, "setTurnCal") || !strcmp(method, "stop") || !strcmp(method, "setMode") || !strcmp(method, "setValue"))
+    sendTelemetry("control");
 }
 
-// ---------------- Line following ----------------
+// ---------------- Line following / route ----------------
+// Soft start: the motor power may only RISE at LINE_RAMP_PWM_PER_S (slows down and steering corrections are immediate).
+int rampStep(int cur, int target, int maxStep) {
+  bool speedingUp = abs(target) > abs(cur) && (cur == 0 || (cur > 0) == (target > 0));
+  if (!speedingUp) return target;
+  return target > cur ? min(target, cur + maxStep) : max(target, cur - maxStep);
+}
+
+void lineMotors(int l, int r) {
+  static unsigned long t = 0;
+  unsigned long now = millis();
+  unsigned long dt = now - t; t = now;
+  if (dt > 100) dt = 100;
+  int m = (int)((long)LINE_RAMP_PWM_PER_S * (long)dt / 1000L);
+  if (m < 1) m = 1;
+  setMotors(rampStep(curL, l, m), rampStep(curR, r, m));
+}
+
+// Wheel command for line following. Forward: (left, right). Reverse with flipped steering: the wheels swap sides and run backwards.
+void driveLine(int l, int r, bool reverse) {
+  if (!reverse) lineMotors(l, r);
+  else if (REVERSE_FLIP_STEERING) lineMotors(-r, -l);
+  else lineMotors(-l, -r);
+}
+
+// Follows the tape. Returns false when all three sensors see white (no line).
+bool followLine(bool L, bool C, bool R, bool reverse) {
+  int sp = reverse ? SPEED_REVERSE : SPEED_LINE;
+  int st = reverse ? SPEED_REVERSE_TURN : SPEED_LINE_TURN;
+  int inner = 0;                                 // the inner wheel just stops (gentle steering; a load needs smooth moves)
+  int outer = reverse ? st : st + 30;
+  if (C && !L && !R)      { driveLine(sp, sp, reverse); }                              // centred on the line
+  else if (L && C && R)   { driveLine(sp, sp, reverse); }                              // a cross-tape: keep going straight
+  else if (L && !R)       { lastTurn = -1; driveLine(inner, outer, reverse); }         // line drifted to the left
+  else if (R && !L)       { lastTurn = 1;  driveLine(outer, inner, reverse); }         // line drifted to the right
+  else if (L && R)        { driveLine(st, st, reverse); }                              // odd shape: creep ahead
+  else return false;
+  return true;
+}
+
+// Dead reckoning: add the distance driven since the last step (from the wheel command and the measured speeds).
+void integratePosition(unsigned long now) {
+  unsigned long dt = now - lastStepMs;
+  lastStepMs = now;
+  if (dt > 100) dt = 100;
+  int avg = (curL + curR) / 2;
+  if (avg > 0)      posCm += FWD_SPEED_CM_S * fwdScale * ((float)avg / SPEED_LINE) * dt / 1000.0f;
+  else if (avg < 0) posCm -= REV_SPEED_CM_S * ((float)(-avg) / SPEED_REVERSE) * dt / 1000.0f;
+}
+
+void arriveAtZone(int z) {
+  unsigned long legMs = millis() - phaseStartMs;
+  stopMotors();
+  atZone = true;
+  zoneStage = ZS_PHOTO;
+  zoneStartMs = millis();
+  zoneIndex = z;
+  phase = (z == 1) ? RP_STAY1 : RP_STAY2;
+  phaseStartMs = zoneStartMs;
+  lineLostSince = 0;
+  arrivalId = (esp_random() & 0x7fffffff) | 1;       // new id: the server takes one photo for it
+  if (z == 1) {
+    if (ZONE1_DIST_CM > 0) {                          // known distance: removes the drift and teaches the forward speed
+      if (posCm > 10.0f) fwdScale = ZONE1_DIST_CM / posCm;
+      posCm = ZONE1_DIST_CM;
+    }
+    zone1Cm = posCm;
+  } else {
+    if (ZONE2_DIST_CM > 0) posCm = -ZONE2_DIST_CM;
+    else if (posCm > -5.0f) posCm = -zone1Cm;         // the centre was not found by the estimate: assume zone 2 is as far as zone 1
+  }
+  readSensors();
+  Serial.printf("[ZONE] arrived zone %d at %.0f cm (this leg took %.1f s) - staying %lu s\n", z, posCm, legMs / 1000.0f, (unsigned long)(ZONE_STAY_MS / 1000));
+  sendTelemetry("zone_arrived");               // the server uses this event (photo + irrigation decision)
+}
+
+void routeAlert(const char *what, const char *event) {
+  stopMotors();
+  lineTimeout = true;
+  Serial.printf("[ALERT] %s - stopping\n", what);
+  setMode(MODE_MANUAL);
+  sendTelemetry(event);
+}
+
+// At the centre: stop, switch LINE mode OFF, report.
+void finishAtCentre() {
+  stopMotors();
+  atZone = false;
+  zoneIndex = 0;
+  zoneHold = false;
+  posCm = 0;
+  phase = RP_DONE;
+  routeFinished = true;
+  Serial.println(rainAbort ? "[ROUTE] back at the centre after rain - LINE mode OFF" : "[ROUTE] back at the centre - finished, LINE mode OFF");
+  setMode(MODE_MANUAL);                        // line mode OFF (the dashboard switch turns off)
+  sendTelemetry(rainAbort ? "rain_return_done" : "route_finished");
+}
+
+// Rain: give up what we were doing and go back to the centre.
+void startRainReturn() {
+  rainAbort = true;
+  zoneHold = false;
+  atZone = false;
+  centrePauseUntilMs = 0;
+  if (probe != P_IDLE) probeAbort();            // pull the soil arm up first
+  Serial.printf("[ALERT] RAIN %.0f %% - returning to the centre (position %.0f cm)\n", sensors.rainPercent, posCm);
+  sendTelemetry("alert_rain_return");           // alarm to the cloud
+  if (phase == RP_HOME || phase == RP_RET_REV) return;                       // already on the way to the centre
+  if (posCm > 1.0f)       startPhase(RP_RET_REV);                           // zone 1 side: reverse to the centre
+  else if (posCm < -1.0f) startPhase(RP_HOME);                              // zone 2 side: forward to the centre
+  else                    finishAtCentre();                                 // already at the centre
+}
+
 void lineFollowStep() {
-  if (routeFinished) { stopMotors(); return; }
+  if (routeFinished || phase == RP_DONE) { stopMotors(); return; }
   unsigned long now = millis();
 
-  // Waiting at a zone: photo first, then soil probe
-  if (atZone) {
+  // ---- rain check (every phase) ----
+  if (!rainAbort) {
+    if (sensors.rainPercent > RAIN_RETURN_PERCENT) {
+      if (rainSince == 0) rainSince = now;
+      if (now - rainSince >= RAIN_CONFIRM_MS) { startRainReturn(); if (routeFinished) return; }
+    } else rainSince = 0;
+  }
+
+  // ---- standing at a zone: photo, soil probe, AI irrigation ----
+  if (phase == RP_STAY1 || phase == RP_STAY2) {
     stopMotors();
+    lastStepMs = now;
     if (zoneStage == ZS_PHOTO) {
       if (now - zoneStartMs >= ZONE_PHOTO_WAIT_MS) { probeStart(); zoneStage = ZS_PROBE; }
-    } else if (probe == P_IDLE && armRetracted()) {   // probe finished and arm is safely up
+    }
+    bool stayOver = (now - zoneStartMs >= ZONE_STAY_MS);
+    bool held = zoneHold && (long)(now - zoneHoldUntilMs) < 0;        // the AI is watering: stay until it lets go (max 5 min)
+    if (zoneStage == ZS_PROBE && probe == P_IDLE && armRetracted() && stayOver && !held) {
       atZone = false;
-      zoneLeftMs = now;
-      if (zoneIndex >= MAX_ZONES) { routeFinished = true; Serial.println("[ROUTE] finished"); sendTelemetry("route_finished"); }
+      Serial.printf("[ZONE] leaving zone %d\n", zoneIndex);
+      startPhase(phase == RP_STAY1 ? RP_BACK : RP_HOME);
     }
     return;
   }
 
-  if (!armRetracted()) { stopMotors(); return; }      // safety: never drive with arm down
+  if (!armRetracted()) { stopMotors(); lastStepMs = now; return; }      // safety: never drive with the arm down
 
-  if (now - zoneLeftMs > ZONE_TIMEOUT_MS) {           // no marker for too long: line lost or rover stuck
-    stopMotors();
-    lineTimeout = true;
-    Serial.println("[ALERT] zone timeout - stopping");
-    setMode(MODE_MANUAL);
-    sendTelemetry("alert_line_timeout");
-    return;
-  }
+  if (now - phaseStartMs > ZONE_TIMEOUT_MS) { routeAlert("leg timeout", "alert_line_timeout"); return; }
+
+  integratePosition(now);
 
   bool L = irOnBlack(PIN_IR_LEFT);
   bool C = irOnBlack(PIN_IR_CENTER);
   bool R = irOnBlack(PIN_IR_RIGHT);
+  bool reverse = (phase == RP_BACK || phase == RP_RET_REV);
+  if (L || C || R) foundLine = true;
+  if (C && !L && !R) lastWasCentre = true; else if (L || R) lastWasCentre = false;
 
-  if (L && C && R) {                                // cross-line under all three sensors = zone marker
-    lineLostSince = 0;
-    if (now - zoneLeftMs > ZONE_IGNORE_MS) {
-      stopMotors();
-      atZone = true;
-      zoneStage = ZS_PHOTO;
-      zoneStartMs = now;
-      zoneIndex++;
-      readSensors();
-      Serial.printf("[ZONE] arrived zone %d\n", zoneIndex);
-      sendTelemetry("zone_arrived");               // use this event to trigger the phone photo
-    } else {
-      setMotors(SPEED_LINE, SPEED_LINE);            // still crossing the marker
-    }
-  } else if (C && !L && !R) {                       // centred on the line -> straight
-    lineLostSince = 0;
-    setMotors(SPEED_LINE, SPEED_LINE);
-  } else if (L && !R) {                             // line drifted to the left -> steer left
-    lineLostSince = 0; lastTurn = -1;
-    setMotors(-SPEED_LINE_TURN / 2, SPEED_LINE_TURN + 30);
-  } else if (R && !L) {                             // line drifted to the right -> steer right
-    lineLostSince = 0; lastTurn = 1;
-    setMotors(SPEED_LINE_TURN + 30, -SPEED_LINE_TURN / 2);
-  } else if (L && R) {                              // outer sensors black, centre white: odd shape, creep forward
-    setMotors(SPEED_LINE_TURN, SPEED_LINE_TURN);
-  } else {                                          // all three white: line lost
-    if (lineLostSince == 0) lineLostSince = now;
-    if (now - lineLostSince > LINE_LOST_MS) {       // gave up searching: stop and alert
-      stopMotors();
-      lineTimeout = true;
-      Serial.println("[ALERT] line lost - stopping");
-      setMode(MODE_MANUAL);
-      sendTelemetry("alert_line_lost");
-      return;
-    }
-    if (lastTurn <= 0) setMotors(-SPEED_LINE_TURN / 2, SPEED_LINE_TURN);   // search toward last seen side
-    else               setMotors(SPEED_LINE_TURN, -SPEED_LINE_TURN / 2);
+  // cross-tape detection (111) - only zone 2 has one
+  bool crossEdge = false;
+  if (L && C && R) {
+    if (!onCross && now - crossEndMs > CROSS_DEBOUNCE_MS) crossEdge = true;
+    onCross = true;
+  } else {
+    if (onCross) crossEndMs = now;
+    onCross = false;
   }
+
+  // ---- reaching the centre (distance estimate) ----
+  if (phase == RP_HOME && posCm >= 0) { finishAtCentre(); return; }                 // forward from zone 2 (or rain): stop at once
+  if (phase == RP_RET_REV && posCm <= 0) { finishAtCentre(); return; }              // reverse from zone 1 after rain
+  if (phase == RP_BACK && !centrePauseDone && posCm <= 0) {                         // reverse from zone 1: pause at the centre
+    stopMotors();
+    centrePauseDone = true;
+    centrePauseUntilMs = now + CENTRE_PAUSE_MS;
+    Serial.printf("[ROUTE] at the centre (%.0f cm) - waiting %lu ms\n", posCm, (unsigned long)CENTRE_PAUSE_MS);
+    return;
+  }
+  if (centrePauseUntilMs) {
+    if ((long)(now - centrePauseUntilMs) < 0) { stopMotors(); lastStepMs = now; return; }
+    centrePauseUntilMs = 0;                                                         // pause over: reverse on
+    lastStepMs = now;
+  }
+
+  // ---- zone 2: cross-tape while reversing ----
+  if (creepUntilMs) {
+    if ((long)(now - creepUntilMs) >= 0) { creepUntilMs = 0; arriveAtZone(2); }
+    else driveLine(SPEED_REVERSE, SPEED_REVERSE, true);
+    return;
+  }
+  if (crossEdge && phase == RP_BACK) {
+    if (!centrePauseDone) Serial.println("[ROUTE] cross-tape seen before the centre estimate - the distance estimate is too long (check FWD/REV_SPEED_CM_S)");
+    if (ZONE2_CREEP_MS > 0) { creepUntilMs = now + ZONE2_CREEP_MS; return; }
+    arriveAtZone(2);
+    return;
+  }
+
+  if (followLine(L, C, R, reverse)) { lineLostSince = 0; return; }
+
+  // ---- all three sensors see white ----
+  if (phase == RP_OUT && lastWasCentre && now - phaseStartMs > OUT_MIN_MS) {   // 010 then 000 = the tape ended = zone 1
+    if (lineLostSince == 0) lineLostSince = now;
+    if (now - lineLostSince >= ZONE1_END_CONFIRM_MS) { arriveAtZone(1); return; }
+    lineMotors(SPEED_LINE, SPEED_LINE);
+    return;
+  }
+  bool finding = reverse && !foundLine;               // leaving zone 1: we are past the end of the tape, reverse straight to find it
+  if (lineLostSince == 0) lineLostSince = finding ? phaseStartMs : now;
+  if (now - lineLostSince > (finding ? (unsigned long)BACK_FIND_MS : (unsigned long)LINE_LOST_MS)) { routeAlert("line lost", "alert_line_lost"); return; }
+  if (reverse)                 driveLine(SPEED_REVERSE, SPEED_REVERSE, true);
+  else if (lastTurn <= 0)      lineMotors(0, SPEED_LINE_TURN);                      // search toward the last seen side
+  else                         lineMotors(SPEED_LINE_TURN, 0);
 }
 
 // ---------------- Local web control ----------------
@@ -805,7 +1037,7 @@ void setupWeb() {
       if (sensors.soilValid && SOIL_CALIBRATED) soil += String(" = ") + String(sensors.soilPercent, 0) + " %";
       if (!sensors.soilValid) soil += " (INVALID)";
     }
-    String s = String("Mode: ") + (mode == MODE_LINE ? "LINE" : "MANUAL") + "  Zone: " + zoneIndex +
+    String s = String("Mode: ") + (mode == MODE_LINE ? "LINE" : "MANUAL") + "  Zone: " + zoneIndex + "  Route: " + phaseName() + " (" + String(posCm, 0) + " cm)" +
                "\nArm: " + armTxt + "  Soil: " + soil +
                "\nTemp: " + (sensors.dhtValid ? String(sensors.temperature, 1) + " C" : "invalid") +
                "  Hum: " + (sensors.dhtValid ? String(sensors.humidity, 1) + " %" : "invalid") +
@@ -835,6 +1067,7 @@ void maintainConnections() {
     if (mqtt.connect(DEVICE_ID, TB_ACCESS_TOKEN, NULL)) {
       Serial.println("ok");
       mqtt.subscribe("v1/devices/me/rpc/request/+");
+      sendTelemetry("connected");              // full report right away so the dashboard fills in
     } else {
       Serial.printf("failed rc=%d\n", mqtt.state());
     }
@@ -850,7 +1083,7 @@ void setup() {
   pinMode(PIN_IN4, OUTPUT); digitalWrite(PIN_IN4, LOW);
   Serial.begin(115200);
   delay(300);
-  Serial.println("\n=== ROVER FIRMWARE 2026-11-03 r11 (r10 + DHT11/22 on GPIO21) ===");
+  Serial.println("\n=== ROVER FIRMWARE 2026-11-03 r14 (DHT11 + 5-min cloud updates + LIVE mode + holdZone) ===");
   Serial.println("Serial test: type f b l r s e c i + Enter  (forward, back, left, right, stop, e-stop, clear, status)");
 
   pwmSetup();
@@ -877,7 +1110,7 @@ void setup() {
   mqtt.setKeepAlive(5);                             // notice a lost connection within ~8 s
   mqtt.setSocketTimeout(2);                         // a failed connect gives up after ~2 s instead of blocking longer
   mqtt.setCallback(onMqtt);
-  mqtt.setBufferSize(800);
+  mqtt.setBufferSize(900);
   setupWeb();
   touchCalibrate();
   readSensors();
@@ -887,8 +1120,8 @@ void setup() {
 // Type ONE letter and press Enter:  f=forward 2 s  b=backward 2 s  l=left 90  r=right 90
 //                                   s=stop  e=emergency stop  c=clear e-stop  i=print status
 void printStatus() {
-  Serial.printf("[STATUS] mode=%s estop=%d arm_up=%d probe=%d drive=%s speed=%d%% lock=%d wifi=%d mqtt=%d\n",
-                mode == MODE_LINE ? "LINE" : "MANUAL", (int)estop, (int)armRetracted(), (int)probe, driveName(),
+  Serial.printf("[STATUS] route=%s mode=%s estop=%d arm_up=%d probe=%d drive=%s speed=%d%% lock=%d wifi=%d mqtt=%d\n",
+                phaseName(), mode == MODE_LINE ? "LINE" : "MANUAL", (int)estop, (int)armRetracted(), (int)probe, driveName(),
                 manualSpeedPct, (int)speedLocked, (int)(WiFi.status() == WL_CONNECTED), (int)mqtt.connected());
 }
 
@@ -921,7 +1154,10 @@ void loop() {
   if (estopClearPending && armRetracted()) estopClear();
 
   if (now - tSensor >= SENSOR_READ_MS && probe == P_IDLE) { tSensor = now; readSensors(); }
-  if (now - tTelemetry >= TELEMETRY_MS) { tTelemetry = now; sendTelemetry("periodic"); }
+  if (now - tTelemetry >= TELEMETRY_MS) { tTelemetry = now; sendStationUdp("periodic"); }      // station link, every 3 s
+  if (liveMode && (long)(now - liveUntilMs) >= 0) { liveMode = false; Serial.println("[LIVE] 30 minutes over - live mode OFF"); sendTelemetry("live_changed"); }
+  static unsigned long tCloud = 0;
+  if (now - tCloud >= (liveMode ? CLOUD_LIVE_MS : CLOUD_IDLE_MS)) { tCloud = now; sendTelemetry("periodic"); }   // ThingsBoard
 
   // Send an alert immediately when the rain-sensor-blocked state changes
   static bool prevBlocked = false;
