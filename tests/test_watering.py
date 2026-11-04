@@ -163,3 +163,14 @@ def test_cooldown_blocks_second_watering():
 ])
 def test_real_model_labels(label, expect):
     assert d(soil(25), plant_health=H(label))["decision"] == expect
+
+
+def test_dashboard_telemetry_fields_and_null_filter(monkeypatch):
+    import thingsboard
+    t = thingsboard.plant_telemetry("Tomato___Early_blight", 0.91, "mature", "tip", "Early blight")
+    assert set(t) == {"ai_plant_label", "ai_plant_confidence", "ai_plant_stage", "ai_care_tip"}
+    sent = {}
+    monkeypatch.setattr(thingsboard, "AI_DEVICE_TOKEN", "tok")
+    monkeypatch.setattr(thingsboard.requests, "post", lambda url, json=None, timeout=None: sent.update(json))
+    thingsboard.push_ai_telemetry({"ai_plant_label": None, "ai_decision": "skip"})
+    assert sent == {"ai_decision": "skip"}

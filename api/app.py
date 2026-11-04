@@ -40,6 +40,7 @@ from crop_growth_tips import get_growth_tip  # noqa: E402
 from irrigation_rules import get_irrigation_recommendation  # noqa: E402
 from macrodroid import notify_macrodroid  # noqa: E402
 from plant_care_tips import get_care_tip  # noqa: E402
+import thingsboard  # noqa: E402
 from weather import get_weather_forecast  # noqa: E402
 
 app = Flask(__name__)
@@ -254,6 +255,11 @@ def upload_image():
         growth_stage=stage,
         top_predictions=result["top_predictions"],
     )
+
+    if is_confident:   # show it on the ThingsBoard dashboard (best-effort, never raises)
+        thingsboard.push_ai_telemetry(thingsboard.plant_telemetry(
+            result["raw_class"], result["confidence"], stage,
+            get_care_tip(result["raw_class"]), plant_health.prettify_label(result["raw_class"])))
 
     return jsonify({
         "accepted": is_confident,
