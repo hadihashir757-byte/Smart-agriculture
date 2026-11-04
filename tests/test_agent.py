@@ -93,6 +93,13 @@ def jpeg_bytes():
 @pytest.fixture
 def cam(monkeypatch):
     monkeypatch.setattr(camera, "BASE", "http://phone:8080")
+    monkeypatch.setattr(agent, "PHOTO_MODE", "timer")          # the older tests below use the timer
+
+
+@pytest.fixture
+def zonecam(monkeypatch):
+    monkeypatch.setattr(camera, "BASE", "http://phone:8080")
+    monkeypatch.setattr(agent, "PHOTO_MODE", "zone")
 
 
 def test_photo_not_configured(monkeypatch):
@@ -127,6 +134,49 @@ def test_rejected_photo_retries_soon(cam, fake_state):
     rej = lambda img: {"accepted": False, "reason": "too blurry"}  # noqa: E731
     assert "rejected" in agent.handle_photo(rover(), NOW, process_photo=rej, fetch=jpeg_bytes)
     assert agent.handle_photo(rover(), NOW + 100, process_photo=rej, fetch=jpeg_bytes) == "photo not due"
+
+
+# ---- photo when the rover arrives at a zone ----
+def at_zone_rover(arrival_id=123456, age_s=5, light=60):
+    d = rover(light=light)
+    d["arrival_id"] = (arrival_id, NOW_MS - age_s * 1000)
+    return d
+
+
+GOOD = lambda img: {"accepted": True, "prediction": {"label": "Healthy", "confidence": 0.9}, "growth_stage": "mature"}  # noqa: E731
+
+
+def test_zone_photo_taken_once_per_arrival(zonecam, fake_state):
+    out = agent.handle_photo(at_zone_rover(), NOW, process_photo=GOOD, fetch=jpeg_bytes)
+    assert out.startswith("zone 3: photo ok")
+    assert agent.handle_photo(at_zone_rover(), NOW + 10, process_photo=GOOD, fetch=jpeg_bytes) == "photo not due"      # same arrival: no second photo
+    assert agent.handle_photo(at_zone_rover(arrival_id=777), NOW + 100, process_photo=GOOD, fetch=jpeg_bytes).startswith("zone 3: photo ok")   # next arrival
+
+
+def test_zone_photo_no_arrival_means_no_photo(zonecam):
+    assert agent.handle_photo(rover(), NOW, process_photo=GOOD, fetch=jpeg_bytes) == "photo not due"
+    assert agent.handle_photo(at_zone_rover(arrival_id=0), NOW, process_photo=GOOD, fetch=jpeg_bytes) == "photo not due"
+
+
+def test_zone_photo_too_late_is_skipped(zonecam, fake_state):
+    out = agent.handle_photo(at_zone_rover(age_s=agent.PHOTO_ARRIVAL_MAX_AGE_S + 60), NOW, process_photo=GOOD, fetch=jpeg_bytes)
+    assert out == "photo not due" and fake_state["last_arrival_id"] == "123456"
+
+
+def test_zone_photo_failure_is_retried_while_rover_is_there(zonecam, fake_state):
+    def boom():
+        raise RuntimeError("camera offline")
+    assert "will try again" in agent.handle_photo(at_zone_rover(), NOW, process_photo=GOOD, fetch=boom)
+    assert agent.handle_photo(at_zone_rover(), NOW + 10, process_photo=GOOD, fetch=jpeg_bytes).startswith("zone 3: photo ok")
+
+
+def test_zone_photo_dark_is_not_retried(zonecam, fake_state):
+    assert "too dark" in agent.handle_photo(at_zone_rover(light=2), NOW, process_photo=GOOD, fetch=jpeg_bytes)
+    assert agent.handle_photo(at_zone_rover(light=60), NOW + 10, process_photo=GOOD, fetch=jpeg_bytes) == "photo not due"
+
+
+def test_zone_mode_ignores_the_timer(zonecam):
+    assert agent.handle_photo(rover(), NOW + 99999, process_photo=GOOD, fetch=jpeg_bytes) == "photo not due"
 
 
 # ---- tick: one failing job must not stop the other ----

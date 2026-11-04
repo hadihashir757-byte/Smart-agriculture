@@ -8,11 +8,14 @@ Every check, using only OUTGOING connections (ThingsBoard, weather service, the 
   2. A NEW soil measurement (newer than the last one handled, and not too old) -> decide for that
      zone with rover_routes.evaluate_zone (same rules + safety layer as /zone-event; sends the water
      command only if AUTO_WATER=true).
-  3. Time for a photo (every PHOTO_INTERVAL_S), and it is
-     daylight -> fetch a snapshot from the phone camera and run the plant-health pipeline.
+  3. A photo: when the rover has just arrived at a zone (PHOTO_MODE=zone, the default) or every
+     PHOTO_INTERVAL_S (PHOTO_MODE=timer, or both), and it is daylight -> fetch a snapshot from the
+     phone camera and run the plant-health pipeline.
 
 Settings (environment variables, all optional except the ThingsBoard login and the camera address):
   ROVER_DEVICE_NAME=rover 01   AGENT_POLL_S=60   PHOTO_INTERVAL_S=1800   PHOTO_RETRY_S=300
+  PHOTO_MODE=zone              (zone | timer | both)  - use AGENT_POLL_S=10 so the photo is taken soon after arrival
+  PHOTO_ARRIVAL_MAX_AGE_S=150  (an arrival older than this is too late for a photo: the rover has left)
   MIN_LIGHT_PERCENT=15         (no photos when the rover's light sensor reads below this)
   MAX_READING_AGE_S=900        (a soil reading older than this is never acted on)
 """
@@ -35,9 +38,11 @@ PHOTO_INTERVAL_S = int(os.environ.get("PHOTO_INTERVAL_S", "1800"))
 PHOTO_RETRY_S = int(os.environ.get("PHOTO_RETRY_S", "300"))
 MIN_LIGHT_PERCENT = float(os.environ.get("MIN_LIGHT_PERCENT", "15"))
 DEFAULT_CROP = os.environ.get("DEFAULT_CROP", "tomato")
+PHOTO_MODE = os.environ.get("PHOTO_MODE", "zone").strip().lower()      # zone | timer | both
+PHOTO_ARRIVAL_MAX_AGE_S = int(os.environ.get("PHOTO_ARRIVAL_MAX_AGE_S", "150"))
 
 ROVER_KEYS = ["soil_moisture_percent", "temperature_c", "humidity_percent", "light_percent",
-              "rain_detected", "zone_id", "event"]
+              "rain_detected", "zone_id", "event", "arrival_id", "at_zone"]
 
 
 def log(msg):
@@ -98,36 +103,85 @@ def handle_soil(rover, now, evaluate_zone, run_plan=None):
     return f"zone {zone_id}: {result['decision']} {result['seconds']}s [{result['status']}] - {result['reason']}"
 
 
-def handle_photo(rover, now, process_photo=None, fetch=None):
-    """Takes a photo when due. Returns a short text."""
-    if not camera.configured():
-        return "camera not configured (CAMERA_BASE_URL)"
-    last_photo = _state_float("last_photo_ts")
-    if (now - last_photo) < PHOTO_INTERVAL_S:
-        return "photo not due"
-
-    light = _float(rover.get("light_percent", (None,))[0])
-    if light is not None and light < MIN_LIGHT_PERCENT:
-        return f"too dark for a photo (light {light:.0f}% < {MIN_LIGHT_PERCENT:.0f}%)"
-
-    retry_at = now - PHOTO_INTERVAL_S + PHOTO_RETRY_S     # makes the next try happen in PHOTO_RETRY_S
+def _shoot(fetch=None, process_photo=None):
+    """Takes one photo and runs the plant-health pipeline. Returns (accepted, text)."""
     try:
         data = (fetch or camera.fetch_snapshot)()
         from PIL import Image
         img = Image.open(io.BytesIO(data)).convert("RGB")
     except Exception as e:  # noqa: BLE001
-        db.set_state("last_photo_ts", retry_at)
-        return f"photo failed: {e}"
+        return False, f"photo failed: {e}"
     if process_photo is None:
         from photo_pipeline import process_photo as _pp
         process_photo = _pp
     result = process_photo(img)
     if result.get("accepted"):
-        db.set_state("last_photo_ts", now)
         pred = result.get("prediction") or {}
-        return f"photo ok: {pred.get('label')} ({pred.get('confidence', 0):.0%}), stage {result.get('growth_stage')}"
+        return True, f"photo ok: {pred.get('label')} ({pred.get('confidence', 0):.0%}), stage {result.get('growth_stage')}"
+    return False, f"photo rejected: {result.get('reason')}"
+
+
+def _too_dark(rover):
+    light = _float(rover.get("light_percent", (None,))[0])
+    if light is not None and light < MIN_LIGHT_PERCENT:
+        return f"too dark for a photo (light {light:.0f}% < {MIN_LIGHT_PERCENT:.0f}%)"
+    return None
+
+
+def photo_on_arrival(rover, now, process_photo=None, fetch=None):
+    """One photo each time the rover arrives at a zone. The rover sends a new random `arrival_id` with every
+    report while it stands at a zone; we take the photo for each id once, as long as the rover is still there."""
+    if "arrival_id" not in rover:
+        return "photo not due"
+    arrival_id, ts_ms = rover["arrival_id"]
+    arrival_id = str(arrival_id).split(".")[0]
+    if arrival_id in ("", "0") or arrival_id == str(db.get_state("last_arrival_id", "")):
+        return "photo not due"
+    if now - ts_ms / 1000.0 > PHOTO_ARRIVAL_MAX_AGE_S:
+        db.set_state("last_arrival_id", arrival_id)         # too late: the rover has left this zone
+        return "photo not due"
+    dark = _too_dark(rover)
+    if dark:
+        db.set_state("last_arrival_id", arrival_id)         # dark: no point trying again at this zone
+        return dark
+    zone = rover.get("zone_id", (None,))[0]
+    ok, text = _shoot(fetch, process_photo)
+    if ok:
+        db.set_state("last_arrival_id", arrival_id)
+        db.set_state("last_photo_ts", now)
+        return f"zone {zone}: {text}"
+    return f"zone {zone}: {text} - will try again while the rover is still there"      # not marked done: retried on the next check
+
+
+def photo_on_timer(rover, now, process_photo=None, fetch=None):
+    last_photo = _state_float("last_photo_ts")
+    if (now - last_photo) < PHOTO_INTERVAL_S:
+        return "photo not due"
+    dark = _too_dark(rover)
+    if dark:
+        return dark
+    retry_at = now - PHOTO_INTERVAL_S + PHOTO_RETRY_S     # makes the next try happen in PHOTO_RETRY_S
+    ok, text = _shoot(fetch, process_photo)
+    if ok:
+        db.set_state("last_photo_ts", now)
+        return text
     db.set_state("last_photo_ts", retry_at)
-    return f"photo rejected: {result.get('reason')} - will retry in {PHOTO_RETRY_S // 60} min"
+    if text.startswith("photo rejected"):
+        return f"{text} - will retry in {PHOTO_RETRY_S // 60} min"
+    return text
+
+
+def handle_photo(rover, now, process_photo=None, fetch=None):
+    """Takes a photo when due (on arrival at a zone and/or on a timer, see PHOTO_MODE). Returns a short text."""
+    if not camera.configured():
+        return "camera not configured (CAMERA_BASE_URL)"
+    notes = []
+    if PHOTO_MODE in ("zone", "both"):
+        notes.append(photo_on_arrival(rover, now, process_photo, fetch))
+    if PHOTO_MODE in ("timer", "both"):
+        notes.append(photo_on_timer(rover, now, process_photo, fetch))
+    real = [n for n in notes if n != "photo not due"]
+    return "; ".join(real) if real else "photo not due"
 
 
 def tick(now=None, evaluate_zone=None):
@@ -160,7 +214,7 @@ def main():
     once = "--once" in sys.argv
     signal.signal(signal.SIGTERM, _handle_stop)
     signal.signal(signal.SIGINT, _handle_stop)
-    log(f"agent started: checking '{ROVER_DEVICE_NAME}' every {POLL_S}s, photo every {PHOTO_INTERVAL_S // 60} min, "
+    log(f"agent started: checking '{ROVER_DEVICE_NAME}' every {POLL_S}s, photos: {PHOTO_MODE}, "
         f"AUTO_WATER={os.environ.get('AUTO_WATER', 'false')}")
     while not _stop:
         try:

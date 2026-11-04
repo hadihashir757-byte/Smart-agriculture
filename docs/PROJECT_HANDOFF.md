@@ -41,13 +41,14 @@ A small farm that waters itself. A **rover** (ESP32) drives a line between plant
 
 Every decision writes a plain-English report (CHECKED / DECISION / WHY) to ThingsBoard (`ai_report`), shown on the dashboard.
 
-## 3a. Rover route (firmware r15, line mode)
-Tape layout: `ZONE 2 --- CENTRE --- ZONE 1`. The centre and zone 2 are cross-tapes (all three IR sensors black, 111). Zone 1 is where the tape ends (010, then 000).
-1. Start on the centre, switch to line mode, drive forward along the tape.
-2. Tape ends: **zone 1**. Stop, `zone_arrived` event (zone 1), stay at least 60 s (photo, soil probe, AI watering; it stays longer while the AI holds it, max 5 min).
-3. Reverse slowly along the tape (steering flipped). First cross-tape = centre (drive on), second = **zone 2**. Stay at least 60 s the same way.
-4. Drive forward; the first cross-tape is the centre. Stop, `route_finished`.
-Telemetry key `route_phase`: to_zone1, at_zone1, reverse_to_zone2, at_zone2, to_centre, finished. Tunables are at the top of the sketch (ZONE_STAY_MS, SPEED_REVERSE, SPEED_REVERSE_TURN, REVERSE_FLIP_STEERING, BACK_CROSSINGS_TO_ZONE2, ZONE2_CREEP_MS). The rover also accepts `measureSoil` while stopped at a zone in line mode, so the AI can re-measure between watering turns.
+## 3a. Rover route (firmware r16, line mode)
+Tape layout: `ZONE 2 --- CENTRE --- ZONE 1`. The centre is plain tape (reads 010), so the rover **estimates distance** (speed x time) to find it. Zone 1 is where the tape ends (010, then 000). Zone 2 is a cross-tape (111).
+1. Start on the centre, switch to line mode, drive forward slowly (soft start).
+2. Tape ends: **zone 1**. Stop, `zone_arrived` (new `arrival_id`, the server takes one photo), stay at least 60 s (probe, readings, AI watering; longer while the AI holds the rover, max 5 min).
+3. Reverse slowly (steering flipped) until the estimated position is the centre, wait 2 s, reverse on until the sensors read 111 = **zone 2**. Photo, stay at least 60 s.
+4. Drive forward until the estimated position is the centre, stop at once, switch **line mode OFF**, report `route_finished`.
+**Rain** (intensity above 15 % for 2 s): stop what it is doing, lift the soil arm, go back to the centre (reverse from the zone 1 side, forward from the zone 2 side), send the event `alert_rain_return` (telemetry `rain_abort = true`, alarm "Rain: rover returned to centre"), then `rain_return_done` and line mode OFF.
+Telemetry: `route_phase`, `route_pos_cm`, `rain_abort`, `at_zone`, `arrival_id`. Tunables at the top of the sketch: ZONE_STAY_MS, CENTRE_PAUSE_MS, FWD_SPEED_CM_S, REV_SPEED_CM_S, ZONE1_DIST_CM, ZONE2_DIST_CM, SPEED_LINE, SPEED_REVERSE, LINE_RAMP_PWM_PER_S, RAIN_RETURN_PERCENT. **Accuracy:** the centre is only as accurate as the speed numbers; measure the real cm/s forward and reverse, and enter the real distances ZONE1_DIST_CM / ZONE2_DIST_CM if you know them. The rover also accepts `measureSoil` while stopped at a zone in line mode.
 
 ## 4. Safety design
 - **The station has the last word.** It refuses: e-stop, bad pump, bad duration, duplicate or expired command, clock not synced, tank low or invalid, rover link lost, rover not at zone, pump already running, other pump running, pump resting. Limits: normal 30 s per run + 60 s rest; demo 5 s + 4 s rest.
@@ -69,7 +70,7 @@ Devices use the profiles "Rover" and "Irrigation station". No e-mail or phone no
 
 ## 8. Names you will need
 **RPC methods.** Rover: move, turn, setSpeed, setSafety, setTurnCal, setMode/setValue, measureSoil, stop, estop, clearEstop, setLive/getLive, holdZone. Station: water, setDemo/getDemo, setLive/getLive, setPump1/2 and getPump1/2, stopAll, estop, clearEstop, getStatus.
-**Server settings (`.env`).** API_KEY, DATA_DIR, LOCATION_LAT/LON, ZONE_PUMP_MAP, DEFAULT_CROP, AUTO_WATER, TB_BASE_URL, TB_USERNAME, TB_PASSWORD, STATION_DEVICE_NAME, ROVER_DEVICE_NAME, AI_DEVICE_TOKEN, CAMERA_BASE_URL, CAMERA_USER, CAMERA_PASSWORD, AGENT_POLL_S, PHOTO_INTERVAL_S. Quote values that contain spaces.
+**Server settings (`.env`).** API_KEY, DATA_DIR, LOCATION_LAT/LON, ZONE_PUMP_MAP, DEFAULT_CROP, AUTO_WATER, TB_BASE_URL, TB_USERNAME, TB_PASSWORD, STATION_DEVICE_NAME, ROVER_DEVICE_NAME, AI_DEVICE_TOKEN, CAMERA_BASE_URL, CAMERA_USER, CAMERA_PASSWORD, AGENT_POLL_S (10 recommended), PHOTO_MODE (zone | timer | both), PHOTO_ARRIVAL_MAX_AGE_S, PHOTO_INTERVAL_S. Quote values that contain spaces.
 
 ## 9. Tests
 124 automated tests pass (`pytest`). 50 end-to-end scenarios (normal mode, seconds and turns, demo plans, plan execution) are in `tests/scenarios.py`; results are in `docs/SCENARIO_REPORT.md`. These use a simulated station and ThingsBoard. **Nothing has run on the real hardware yet.**
@@ -78,7 +79,7 @@ Devices use the profiles "Rover" and "Irrigation station". No e-mail or phone no
 1. Upload rover r15 and station v0.6. Set the same shared key in both. Check relay polarity, calibrate the tank distances, wire pump power with flyback diodes.
 2. Calibrate the soil sensor (dry-air and in-water readings).
 3. Merge the PRs, update the Mac, restart the agent, fill `.env`, keep `AUTO_WATER=false`, check the AI reasoning report, then try demo mode.
-4. Install LensCast, set a password, set `CAMERA_BASE_URL`. Make the agent take the photo when the rover reaches a zone (today it uses a 30-minute timer).
+4. Install LensCast, set a password, set `CAMERA_BASE_URL`. The agent now takes one photo each time the rover arrives at a zone (`PHOTO_MODE=zone`, needs `AGENT_POLL_S=10`).
 5. Not built: dashboard buttons for photo and zoom, live camera video on the dashboard (needs an HTTPS link to the Mac), alarm notifications by e-mail.
 6. Keep the Mac awake while the system runs (`sudo pmset -c sleep 0 disksleep 0`).
 
