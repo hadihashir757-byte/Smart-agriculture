@@ -63,6 +63,12 @@ def init_db():
             set_at REAL NOT NULL
         );
 
+        CREATE TABLE IF NOT EXISTS zone_growth_baseline (
+            zone_id INTEGER PRIMARY KEY,
+            baseline_ratio REAL NOT NULL,
+            set_at REAL NOT NULL
+        );
+
         CREATE TABLE IF NOT EXISTS irrigation_log (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             ts REAL NOT NULL,
@@ -92,6 +98,10 @@ def init_db():
         );
         """
     )
+    # older databases: add the zone column to plant_health_predictions
+    cols = [r["name"] for r in conn.execute("PRAGMA table_info(plant_health_predictions)")]
+    if "zone_id" not in cols:
+        conn.execute("ALTER TABLE plant_health_predictions ADD COLUMN zone_id INTEGER")
     conn.commit()
     conn.close()
 
@@ -130,27 +140,35 @@ def latest_sensor_reading():
 
 
 def insert_plant_health_prediction(predicted_class, confidence, accepted, reject_reason=None,
-                                    growth_stage=None, top_predictions=None):
+                                    growth_stage=None, top_predictions=None, zone_id=None):
     conn = get_connection()
     conn.execute(
         """INSERT INTO plant_health_predictions
-           (ts, predicted_class, confidence, accepted, reject_reason, growth_stage, top_predictions)
-           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+           (ts, predicted_class, confidence, accepted, reject_reason, growth_stage, top_predictions, zone_id)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
         (time.time(), predicted_class, confidence, int(accepted), reject_reason, growth_stage,
-         json.dumps(top_predictions) if top_predictions is not None else None),
+         json.dumps(top_predictions) if top_predictions is not None else None, zone_id),
     )
     conn.commit()
     conn.close()
 
 
-def latest_accepted_plant_health(max_age_s=None):
+def latest_accepted_plant_health(max_age_s=None, zone_id=None):
     """Newest accepted prediction. If max_age_s is given and the newest one is
-    older than that, return None (a stale photo result must not drive decisions)."""
+    older than that, return None (a stale photo result must not drive decisions).
+    With zone_id: only that zone's photos (and photos that carry no zone, e.g. uploaded by hand)."""
     conn = get_connection()
-    row = conn.execute(
-        """SELECT * FROM plant_health_predictions
-           WHERE accepted = 1 ORDER BY ts DESC LIMIT 1"""
-    ).fetchone()
+    if zone_id is None:
+        row = conn.execute(
+            """SELECT * FROM plant_health_predictions
+               WHERE accepted = 1 ORDER BY ts DESC LIMIT 1"""
+        ).fetchone()
+    else:
+        row = conn.execute(
+            """SELECT * FROM plant_health_predictions
+               WHERE accepted = 1 AND (zone_id = ? OR zone_id IS NULL) ORDER BY ts DESC LIMIT 1""",
+            (int(zone_id),),
+        ).fetchone()
     conn.close()
     if not row:
         return None
@@ -160,20 +178,31 @@ def latest_accepted_plant_health(max_age_s=None):
     return row
 
 
-def get_growth_baseline():
+def get_growth_baseline(zone_id=None):
+    """The growth baseline of one zone (zone_id given) or the single shared one (no zone)."""
     conn = get_connection()
-    row = conn.execute("SELECT * FROM growth_baseline WHERE id = 1").fetchone()
+    if zone_id is None:
+        row = conn.execute("SELECT * FROM growth_baseline WHERE id = 1").fetchone()
+    else:
+        row = conn.execute("SELECT * FROM zone_growth_baseline WHERE zone_id = ?", (int(zone_id),)).fetchone()
     conn.close()
     return dict(row) if row else None
 
 
-def set_growth_baseline(ratio):
+def set_growth_baseline(ratio, zone_id=None):
     conn = get_connection()
-    conn.execute(
-        """INSERT INTO growth_baseline (id, baseline_ratio, set_at) VALUES (1, ?, ?)
-           ON CONFLICT(id) DO UPDATE SET baseline_ratio = excluded.baseline_ratio, set_at = excluded.set_at""",
-        (ratio, time.time()),
-    )
+    if zone_id is None:
+        conn.execute(
+            """INSERT INTO growth_baseline (id, baseline_ratio, set_at) VALUES (1, ?, ?)
+               ON CONFLICT(id) DO UPDATE SET baseline_ratio = excluded.baseline_ratio, set_at = excluded.set_at""",
+            (ratio, time.time()),
+        )
+    else:
+        conn.execute(
+            """INSERT INTO zone_growth_baseline (zone_id, baseline_ratio, set_at) VALUES (?, ?, ?)
+               ON CONFLICT(zone_id) DO UPDATE SET baseline_ratio = excluded.baseline_ratio, set_at = excluded.set_at""",
+            (int(zone_id), ratio, time.time()),
+        )
     conn.commit()
     conn.close()
 

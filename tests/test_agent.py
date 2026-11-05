@@ -109,7 +109,7 @@ def test_photo_not_configured(monkeypatch):
 
 def test_photo_taken_when_due_and_bright(cam, fake_state):
     seen = []
-    ok = lambda img: seen.append(img) or {"accepted": True, "prediction": {"label": "Healthy", "confidence": 0.9}, "growth_stage": "mature"}  # noqa: E731
+    ok = lambda img, **kw: seen.append(img) or {"accepted": True, "prediction": {"label": "Healthy", "confidence": 0.9}, "growth_stage": "mature"}  # noqa: E731
     out = agent.handle_photo(rover(), NOW, process_photo=ok, fetch=jpeg_bytes)
     assert out.startswith("photo ok") and len(seen) == 1
     assert float(fake_state["last_photo_ts"]) == NOW
@@ -117,21 +117,21 @@ def test_photo_taken_when_due_and_bright(cam, fake_state):
 
 
 def test_photo_skipped_when_dark(cam):
-    out = agent.handle_photo(rover(light=3), NOW, process_photo=lambda i: {}, fetch=jpeg_bytes)
+    out = agent.handle_photo(rover(light=3), NOW, process_photo=lambda i, **kw: {}, fetch=jpeg_bytes)
     assert "too dark" in out
 
 
 def test_camera_failure_retries_soon(cam, fake_state):
     def boom():
         raise RuntimeError("could not reach the camera")
-    out = agent.handle_photo(rover(), NOW, process_photo=lambda i: {}, fetch=boom)
+    out = agent.handle_photo(rover(), NOW, process_photo=lambda i, **kw: {}, fetch=boom)
     assert "photo failed" in out
     # due again after the short retry delay, not after the full interval
-    assert agent.handle_photo(rover(), NOW + agent.PHOTO_RETRY_S + 1, process_photo=lambda i: {"accepted": True, "prediction": {}}, fetch=jpeg_bytes).startswith("photo ok")
+    assert agent.handle_photo(rover(), NOW + agent.PHOTO_RETRY_S + 1, process_photo=lambda i, **kw: {"accepted": True, "prediction": {}}, fetch=jpeg_bytes).startswith("photo ok")
 
 
 def test_rejected_photo_retries_soon(cam, fake_state):
-    rej = lambda img: {"accepted": False, "reason": "too blurry"}  # noqa: E731
+    rej = lambda img, **kw: {"accepted": False, "reason": "too blurry"}  # noqa: E731
     assert "rejected" in agent.handle_photo(rover(), NOW, process_photo=rej, fetch=jpeg_bytes)
     assert agent.handle_photo(rover(), NOW + 100, process_photo=rej, fetch=jpeg_bytes) == "photo not due"
 
@@ -143,7 +143,7 @@ def at_zone_rover(arrival_id=123456, age_s=5, light=60):
     return d
 
 
-GOOD = lambda img: {"accepted": True, "prediction": {"label": "Healthy", "confidence": 0.9}, "growth_stage": "mature"}  # noqa: E731
+GOOD = lambda img, **kw: {"accepted": True, "prediction": {"label": "Healthy", "confidence": 0.9}, "growth_stage": "mature"}  # noqa: E731
 
 
 def test_zone_photo_taken_once_per_arrival(zonecam, fake_state):
@@ -176,7 +176,7 @@ def test_zone_photo_dark_is_not_retried(zonecam, fake_state):
 
 
 def test_zone_photo_for_a_crop_without_a_disease_model_still_counts(zonecam, fake_state):
-    no_model = lambda img: {"accepted": False, "reason": "Disease detection isn't available for 'mango' yet", "growth_stage": "mature"}  # noqa: E731
+    no_model = lambda img, **kw: {"accepted": False, "reason": "Disease detection isn't available for 'mango' yet", "growth_stage": "mature"}  # noqa: E731
     out = agent.handle_photo(at_zone_rover(), NOW, process_photo=no_model, fetch=jpeg_bytes)
     assert out.startswith("zone 3: photo ok") and "no disease model" in out
     assert agent.handle_photo(at_zone_rover(), NOW + 10, process_photo=no_model, fetch=jpeg_bytes) == "photo not due"      # not retried
@@ -241,3 +241,20 @@ def test_demo_plan_is_not_executed_without_auto_water():
                 "plan": {"run": True, "zone_id": zone_id}}
     out = agent.handle_soil(rover(), NOW, fake_eval, run_plan=lambda p: ran.append(p))
     assert not ran and "dry_run" in out
+
+
+# ---- per-zone crops ----
+def test_decision_uses_the_crop_of_the_zone(monkeypatch):
+    monkeypatch.setenv("ZONE_CROP_MAP", "2:mango,3:tomato")
+    rec = Recorder()
+    agent.handle_soil(rover(), NOW, rec)                         # value_at says zone 2
+    assert rec.calls[0][2] == "mango"
+
+
+def test_zone_photo_is_processed_for_the_rovers_zone(zonecam, fake_state):
+    seen = []
+    def pp(img, zone_id=None):
+        seen.append(zone_id)
+        return {"accepted": True, "prediction": {"label": "Healthy", "confidence": 0.9}, "growth_stage": "mature"}
+    agent.handle_photo(at_zone_rover(), NOW, process_photo=pp, fetch=jpeg_bytes)
+    assert seen == [3]

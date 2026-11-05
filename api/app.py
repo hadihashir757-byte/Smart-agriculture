@@ -195,7 +195,12 @@ def upload_image():
     except Exception:
         return jsonify({"error": "could not decode image"}), 400
 
-    return jsonify(process_photo(img)), 200   # a rejected photo is not a server error - retake and resend
+    zone_id = request.form.get("zone_id") or request.args.get("zone_id")     # optional: which zone the photo shows
+    try:
+        zone_id = int(zone_id) if zone_id not in (None, "") else None
+    except ValueError:
+        return jsonify({"error": "zone_id must be a whole number"}), 400
+    return jsonify(process_photo(img, zone_id=zone_id)), 200   # a rejected photo is not a server error - retake and resend
 
 
 if __name__ == "__main__":

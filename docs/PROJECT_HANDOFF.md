@@ -50,6 +50,8 @@ Tape layout: `ZONE 2 --- CENTRE --- ZONE 1`. The centre is plain tape (reads 010
 **Rain** (intensity above 15 % for 2 s): stop what it is doing, lift the soil arm, go back to the centre (reverse from the zone 1 side, forward from the zone 2 side), send the event `alert_rain_return` (telemetry `rain_abort = true`, alarm "Rain: rover returned to centre"), then `rain_return_done` and line mode OFF.
 Telemetry: `route_phase`, `route_pos_cm`, `rain_abort`, `at_zone`, `arrival_id`. Tunables at the top of the sketch: ZONE_STAY_MS, CENTRE_PAUSE_MS, FWD_SPEED_CM_S, REV_SPEED_CM_S, ZONE1_DIST_CM, ZONE2_DIST_CM, SPEED_LINE, SPEED_REVERSE, LINE_RAMP_PWM_PER_S, RAIN_RETURN_PERCENT. **Accuracy:** the centre is only as accurate as the speed numbers; measure the real cm/s forward and reverse, and enter the real distances ZONE1_DIST_CM / ZONE2_DIST_CM if you know them. The rover also accepts `measureSoil` while stopped at a zone in line mode.
 
+**Two crops (per-zone).** `ZONE_CROP_MAP` says which crop grows in which zone (zones not listed use `DEFAULT_CROP`). The crop of the zone picks the watering rules, and each zone has its own photo health result and growth baseline (`plant_health_predictions.zone_id`, table `zone_growth_baseline`), so a mango photo never changes a tomato decision. Mango has no disease model: its photo still sets the growth stage. Photos uploaded by hand without `zone_id` count for every zone.
+
 ## 4. Safety design
 - **The station has the last word.** It refuses: e-stop, bad pump, bad duration, duplicate or expired command, clock not synced, tank low or invalid, rover link lost, rover not at zone, pump already running, other pump running, pump resting. Limits: normal 30 s per run + 60 s rest; demo 5 s + 4 s rest.
 - **E-stop** stops everything and blocks new commands.
@@ -70,7 +72,7 @@ Devices use the profiles "Rover" and "Irrigation station". No e-mail or phone no
 
 ## 8. Names you will need
 **RPC methods.** Rover: move, turn, setSpeed, setSafety, setTurnCal, setMode/setValue, measureSoil, stop, estop, clearEstop, setLive/getLive, holdZone. Station: water, setDemo/getDemo, setLive/getLive, setPump1/2 and getPump1/2, stopAll, estop, clearEstop, getStatus.
-**Server settings (`.env`).** API_KEY, DATA_DIR, LOCATION_LAT/LON, ZONE_PUMP_MAP, DEFAULT_CROP, AUTO_WATER, TB_BASE_URL, TB_USERNAME, TB_PASSWORD, STATION_DEVICE_NAME, ROVER_DEVICE_NAME, AI_DEVICE_TOKEN, CAMERA_BASE_URL, CAMERA_USER, CAMERA_PASSWORD, AGENT_POLL_S (10 recommended), PHOTO_MODE (zone | timer | both), PHOTO_ARRIVAL_MAX_AGE_S, PHOTO_INTERVAL_S. Quote values that contain spaces.
+**Server settings (`.env`).** API_KEY, DATA_DIR, LOCATION_LAT/LON, ZONE_PUMP_MAP, ZONE_CROP_MAP (e.g. `1:tomato,2:mango`), DEFAULT_CROP, AUTO_WATER, TB_BASE_URL, TB_USERNAME, TB_PASSWORD, STATION_DEVICE_NAME, ROVER_DEVICE_NAME, AI_DEVICE_TOKEN, CAMERA_BASE_URL, CAMERA_USER, CAMERA_PASSWORD, AGENT_POLL_S (10 recommended), PHOTO_MODE (zone | timer | both), PHOTO_ARRIVAL_MAX_AGE_S, PHOTO_INTERVAL_S. Quote values that contain spaces.
 
 ## 9. Tests
 124 automated tests pass (`pytest`). 50 end-to-end scenarios (normal mode, seconds and turns, demo plans, plan execution) are in `tests/scenarios.py`; results are in `docs/SCENARIO_REPORT.md`. These use a simulated station and ThingsBoard. **Nothing has run on the real hardware yet.**

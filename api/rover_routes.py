@@ -15,6 +15,7 @@ import time
 
 from flask import Blueprint, jsonify, request
 
+import crops
 import db
 import explain
 import irrigation_plan
@@ -48,7 +49,7 @@ def evaluate_zone(zone_id, readings, crop_type, tank_hint=None):
     tank_hint: a tank level supplied by the caller, used only if the station cannot be asked."""
     # Latest photo result (ignored if too old). Only the growth stage influences the
     # watering thresholds; disease/health is reported, never used to water more.
-    health = db.latest_accepted_plant_health(max_age_s=watering.PLANT_HEALTH_MAX_AGE_S)
+    health = db.latest_accepted_plant_health(max_age_s=watering.PLANT_HEALTH_MAX_AGE_S, zone_id=zone_id)
     plant_stage = (health["growth_stage"] if health and health["growth_stage"] else "mature")
     health_summary = ({"label": health["predicted_class"], "confidence": health["confidence"],
                        "growth_stage": health["growth_stage"]} if health else None)
@@ -204,7 +205,7 @@ def zone_event():
     except (TypeError, ValueError) as e:
         return jsonify({"error": str(e)}), 400
 
-    crop_type = str(payload.get("crop_type") or DEFAULT_CROP).lower()
+    crop_type = str(payload.get("crop_type") or crops.crop_for_zone(zone_id)).lower()
     result = evaluate_zone(zone_id, readings, crop_type, payload.get("tank_level_percent"))
     if result.get("plan") and result["auto_water"] and result["status"] == "plan_ready":
         result["status"] = "plan_started" if plan_runner.start_in_background(result["plan"]) else "plan_busy"

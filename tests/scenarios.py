@@ -137,7 +137,7 @@ def run(sc, monkeypatch=None):
         (rr.thingsboard, "latest_telemetry", lambda dev, keys: {k: v for k, v in st.items() if k in keys}),
         (rr.thingsboard, "push_ai_telemetry", lambda d: pushed.update(d)),
         (rr.thingsboard, "send_rpc", lambda *a, **k: {"accepted": True}),
-        (rr.db, "latest_accepted_plant_health", lambda max_age_s=None: health),
+        (rr.db, "latest_accepted_plant_health", lambda max_age_s=None, zone_id=None: health),
         (rr.db, "last_watering_ts", lambda z: (time.time() - sc["last_water_ago"]) if sc["last_water_ago"] else None),
         (rr.db, "insert_watering_decision", lambda *a, **k: 1),
         (rr.db, "update_watering_decision", lambda *a, **k: None),
