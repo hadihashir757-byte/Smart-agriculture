@@ -5,7 +5,10 @@ Used by the /upload-image route (phone uploads) and by the background agent
 disease model -> save -> show on the ThingsBoard dashboard.
 """
 
+import base64
+import io
 import os
+import time
 
 import numpy as np
 
@@ -18,10 +21,34 @@ from growth_stage import plant_pixel_ratio, estimate_growth_stage
 from image_quality import check_quality
 from plant_care_tips import get_care_tip
 
+THUMB_PX = int(os.environ.get("PHOTO_THUMB_PX", "240"))          # longest side of the dashboard thumbnail
+THUMB_QUALITY = int(os.environ.get("PHOTO_THUMB_QUALITY", "55"))
 QUALITY_GATE_ENABLED = os.environ.get("QUALITY_GATE_ENABLED", "true").lower() == "true"
 
 
+def make_thumbnail(img):
+    """Small JPEG as a data URL (a few KB) so the photo can travel to ThingsBoard as telemetry."""
+    t = img.convert("RGB").copy()
+    t.thumbnail((THUMB_PX, THUMB_PX))
+    buf = io.BytesIO()
+    t.save(buf, format="JPEG", quality=THUMB_QUALITY, optimize=True)
+    return "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode("ascii")
+
+
 def process_photo(img, zone_id=None, crop_type=None):
+    """Runs the pipeline, then shows the photo on the ThingsBoard dashboard (best-effort, never raises).
+    A photo without a zone_id (sent by hand) goes to the 'custom photo' card, zone photos to their zone's card."""
+    result = _process(img, zone_id, crop_type)
+    try:
+        note = "" if result.get("accepted") else str(result.get("reason") or "")[:60]
+        crop = crops.crop_for_zone(zone_id) if zone_id is not None else None
+        thingsboard.push_ai_telemetry(thingsboard.photo_telemetry(make_thumbnail(img), zone_id, crop, time.time(), note))
+    except Exception as e:  # noqa: BLE001
+        print(f"[photo] could not show the photo on the dashboard: {e}")
+    return result
+
+
+def _process(img, zone_id=None, crop_type=None):
     """img: a PIL image. Returns the same JSON-able dict the /upload-image route always returned.
     zone_id: the zone the photo shows - its crop, growth baseline and health result are kept per zone.
     crop_type: overrides the crop (otherwise ZONE_CROP_MAP / the latest reading / DEFAULT_CROP)."""

@@ -90,3 +90,25 @@ def test_mango_zone_photo_uses_the_mango_rules_and_its_own_baseline(tmpdb, monke
     assert db.get_growth_baseline(1) and db.get_growth_baseline(2)
     assert db.latest_accepted_plant_health(zone_id=2) is None      # mango photo gave no health result
     assert db.latest_accepted_plant_health(zone_id=1)["zone_id"] == 1
+
+
+def test_photo_is_shown_on_the_dashboard_per_zone_and_as_custom(tmpdb, monkeypatch):
+    monkeypatch.setenv("ZONE_CROP_MAP", "1:tomato,2:mango")
+    monkeypatch.setattr(photo_pipeline, "check_quality", lambda a: (True, "", {}))
+    monkeypatch.setattr(plant_health, "predict", lambda img, crop_type: {"label": "Healthy", "raw_class": "x", "confidence": 0.9, "top_predictions": []})
+    pushed = []
+    monkeypatch.setattr(photo_pipeline.thingsboard, "push_ai_telemetry", lambda d: pushed.append(d))
+    photo_pipeline.process_photo(photo(), zone_id=2)
+    photo_pipeline.process_photo(photo())
+    keys = [k for d in pushed for k in d if k.startswith("ai_photo")]
+    assert "ai_photo_zone2" in keys and "ai_photo_custom" in keys
+    zone2 = next(d for d in pushed if "ai_photo_zone2" in d)
+    assert zone2["ai_photo_zone2"].startswith("data:image/jpeg;base64,") and "mango" in zone2["ai_photo_zone2_label"]
+    assert len(zone2["ai_photo_zone2"]) < 20000
+
+
+def test_a_dashboard_failure_never_breaks_the_photo_result(tmpdb, monkeypatch):
+    monkeypatch.setattr(photo_pipeline, "check_quality", lambda a: (False, "too blurry", {}))
+    def boom(d): raise RuntimeError("thingsboard down")
+    monkeypatch.setattr(photo_pipeline.thingsboard, "push_ai_telemetry", boom)
+    assert photo_pipeline.process_photo(photo(), zone_id=1)["accepted"] is False
