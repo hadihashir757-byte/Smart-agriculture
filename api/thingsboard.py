@@ -113,3 +113,15 @@ def plant_telemetry(raw_class, confidence, stage, care_tip, pretty_label):
     """Fields shown on the dashboard's 'Plant health / Plant state / Care tip' cards."""
     return {"ai_plant_label": pretty_label, "ai_plant_confidence": confidence,
             "ai_plant_stage": stage, "ai_care_tip": care_tip}
+
+
+def photo_telemetry(thumb_data_url, zone_id, crop, when, note=""):
+    """Fields for the dashboard's photo cards: one per zone and one for photos you send yourself ('custom')."""
+    stamp = time.strftime("%d %b %H:%M", time.localtime(when))
+    if zone_id is None:
+        key, label = "ai_photo_custom", f"Custom photo - {stamp}"
+    else:
+        key, label = f"ai_photo_zone{int(zone_id)}", f"Zone {int(zone_id)}" + (f" ({crop})" if crop else "") + f" - {stamp}"
+    if note:
+        label += f" - {note}"
+    return {key: thumb_data_url, key + "_label": label}

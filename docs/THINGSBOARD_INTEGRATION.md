@@ -69,3 +69,12 @@ Create a ThingsBoard device `ai_server`, copy its access token into `AI_DEVICE_T
 The server then sends: ai_decision, ai_seconds, ai_reason, ai_status, ai_zone_id (after each zone event) and
 ai_plant_label, ai_plant_stage, ai_care_tip, ai_plant_confidence (after each accepted plant photo).
 Empty values are never sent, so a good value is not overwritten by a blank.
+
+
+## Photos on the dashboard
+
+Every processed photo is shrunk to a small JPEG (about 240 px, roughly 10 KB) and sent to the `ai_server` device as telemetry:
+`ai_photo_zone1`, `ai_photo_zone2` (photos taken at that zone) and `ai_photo_custom` (photos sent to `/upload-image` without a `zone_id`),
+each with a `..._label` key (zone, crop, time, and why it was rejected if it was). The Rover dashboard has three cards
+("Zone 1 photo", "Zone 2 photo", "My custom photo") that show them, plus a "Live camera" card with the camera stream
+(an `https` tunnel address; see the handoff notes). The thumbnails are sent even when a photo is rejected by the quality check.
