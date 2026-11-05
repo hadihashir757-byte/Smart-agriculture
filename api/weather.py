@@ -66,7 +66,7 @@ def get_weather_forecast():
                 "latitude": lat,
                 "longitude": lon,
                 "hourly": "precipitation,precipitation_probability,weathercode,windspeed_10m,temperature_2m",
-                "forecast_days": 1,
+                "forecast_days": 2,       # 2 days so the next-6-hours window never runs past midnight
                 "timezone": "auto",
             },
             timeout=5,
