@@ -258,3 +258,38 @@ def test_zone_photo_is_processed_for_the_rovers_zone(zonecam, fake_state):
         return {"accepted": True, "prediction": {"label": "Healthy", "confidence": 0.9}, "growth_stage": "mature"}
     agent.handle_photo(at_zone_rover(), NOW, process_photo=pp, fetch=jpeg_bytes)
     assert seen == [3]
+
+
+# ---- weather forecast on the dashboard ----
+FORECAST = {"rain_mm": 2.34, "condition": "Rainy", "probability_pct": 70, "temperature_c": 27.46, "wind_kmh": 12.4}
+
+
+def test_weather_is_pushed_then_not_again_until_due(monkeypatch, fake_state):
+    monkeypatch.setattr(thingsboard, "AI_DEVICE_TOKEN", "x")
+    monkeypatch.setenv("LOCATION_LAT", "11.6")
+    monkeypatch.setenv("LOCATION_LON", "75.6")
+    sent = []
+    monkeypatch.setattr(thingsboard, "push_ai_telemetry", lambda d: sent.append(d))
+    out = agent.push_weather(NOW, forecast=lambda: FORECAST)
+    assert out.startswith("weather sent") and sent[0]["ai_weather_rain_mm_6h"] == 2.3
+    assert sent[0]["ai_weather_temp_c"] == 27.5 and sent[0]["ai_weather_rain_chance_pct"] == 70
+    assert agent.push_weather(NOW + 60, forecast=lambda: FORECAST) == "weather not due"
+    assert agent.push_weather(NOW + agent.WEATHER_PUSH_S + 1, forecast=lambda: FORECAST).startswith("weather sent")
+
+
+def test_weather_needs_location_and_token(monkeypatch, fake_state):
+    monkeypatch.setattr(thingsboard, "AI_DEVICE_TOKEN", None)
+    assert "AI_DEVICE_TOKEN" in agent.push_weather(NOW, forecast=lambda: FORECAST)
+    monkeypatch.setattr(thingsboard, "AI_DEVICE_TOKEN", "x")
+    monkeypatch.delenv("LOCATION_LAT", raising=False)
+    assert "LOCATION" in agent.push_weather(NOW + 10_000, forecast=lambda: FORECAST)
+
+
+def test_unknown_forecast_is_not_sent(monkeypatch, fake_state):
+    monkeypatch.setattr(thingsboard, "AI_DEVICE_TOKEN", "x")
+    monkeypatch.setenv("LOCATION_LAT", "11.6")
+    monkeypatch.setenv("LOCATION_LON", "75.6")
+    sent = []
+    monkeypatch.setattr(thingsboard, "push_ai_telemetry", lambda d: sent.append(d))
+    out = agent.push_weather(NOW, forecast=lambda: {"rain_mm": 0.0, "condition": "Unknown", "probability_pct": 0})
+    assert "unavailable" in out and sent == []

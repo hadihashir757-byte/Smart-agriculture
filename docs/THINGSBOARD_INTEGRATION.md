@@ -78,3 +78,10 @@ Every processed photo is shrunk to a small JPEG (about 240 px, roughly 10 KB) an
 each with a `..._label` key (zone, crop, time, and why it was rejected if it was). The Rover dashboard has three cards
 ("Zone 1 photo", "Zone 2 photo", "My custom photo") that show them, plus a "Live camera" card with the camera stream
 (an `https` tunnel address; see the handoff notes). The thumbnails are sent even when a photo is rejected by the quality check.
+
+## Weather forecast on the dashboard
+
+Every `WEATHER_PUSH_S` seconds (default 900) the agent sends the Open-Meteo forecast for `LOCATION_LAT` / `LOCATION_LON` to the `ai_server` device:
+`ai_weather_condition`, `ai_weather_temp_c`, `ai_weather_rain_chance_pct`, `ai_weather_rain_mm_6h`, `ai_weather_wind_kmh`, `ai_weather_summary`.
+The Rover dashboard has a "Weather forecast" card and four value cards (temperature, rain chance, rain in the next 6 h, wind).
+The same forecast is what the watering decision uses to skip watering when rain is expected.

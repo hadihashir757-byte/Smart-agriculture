@@ -125,3 +125,19 @@ def photo_telemetry(thumb_data_url, zone_id, crop, when, note=""):
     if note:
         label += f" - {note}"
     return {key: thumb_data_url, key + "_label": label}
+
+def weather_telemetry(w, when):
+    """Fields for the dashboard's weather forecast cards (None values are dropped by push_ai_telemetry)."""
+    if not w or w.get("condition") in (None, "Unknown"):
+        return {}
+    stamp = time.strftime("%d %b %H:%M", time.localtime(when))
+    rain = round(float(w.get("rain_mm") or 0.0), 1)
+    temp = w.get("temperature_c")
+    return {
+        "ai_weather_condition": w["condition"],
+        "ai_weather_temp_c": None if temp is None else round(float(temp), 1),
+        "ai_weather_rain_chance_pct": int(w.get("probability_pct") or 0),
+        "ai_weather_rain_mm_6h": rain,
+        "ai_weather_wind_kmh": None if w.get("wind_kmh") is None else round(float(w["wind_kmh"]), 0),
+        "ai_weather_summary": f"{w['condition']}, rain in the next 6 h: {rain} mm. Updated {stamp}",
+    }

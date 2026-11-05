@@ -20,7 +20,7 @@ import time
 import requests
 
 _CACHE_TTL_SEC = 900  # 15 min - no real need to call it more often than this
-_cache = {"ts": 0, "rain_mm": 0.0, "condition": "Unknown", "probability_pct": 0}
+_cache = {"ts": 0, "rain_mm": 0.0, "condition": "Unknown", "probability_pct": 0, "temperature_c": None, "wind_kmh": None}
 
 # Open-Meteo's weathercode is the standard WMO code table - collapsing it
 # down to the three words a tiny Blynk label can actually show.
@@ -40,7 +40,7 @@ def _classify_condition(weather_code, wind_speed_kmh):
 
 
 def get_weather_forecast():
-    """Returns {"rain_mm": float, "condition": str, "probability_pct": int}.
+    """Returns {"rain_mm", "condition", "probability_pct", "temperature_c", "wind_kmh"}.
 
     rain_mm is the sum of the next ~6 hours - what the irrigation logic's
     RAIN_SKIP_THRESHOLD_MM check is based on. condition and probability_pct
@@ -50,13 +50,14 @@ def get_weather_forecast():
     now = time.time()
     if now - _cache["ts"] < _CACHE_TTL_SEC:
         return {"rain_mm": _cache["rain_mm"], "condition": _cache["condition"],
-                "probability_pct": _cache["probability_pct"]}
+                "probability_pct": _cache["probability_pct"], "temperature_c": _cache["temperature_c"],
+                "wind_kmh": _cache["wind_kmh"]}
 
     lat = os.environ.get("LOCATION_LAT")
     lon = os.environ.get("LOCATION_LON")
 
     if not (lat and lon):
-        return {"rain_mm": 0.0, "condition": "Unknown", "probability_pct": 0}
+        return {"rain_mm": 0.0, "condition": "Unknown", "probability_pct": 0, "temperature_c": None, "wind_kmh": None}
 
     try:
         resp = requests.get(
@@ -64,7 +65,7 @@ def get_weather_forecast():
             params={
                 "latitude": lat,
                 "longitude": lon,
-                "hourly": "precipitation,precipitation_probability,weathercode,windspeed_10m",
+                "hourly": "precipitation,precipitation_probability,weathercode,windspeed_10m,temperature_2m",
                 "forecast_days": 1,
                 "timezone": "auto",
             },
@@ -83,6 +84,7 @@ def get_weather_forecast():
         probability = hourly.get("precipitation_probability", [])
         weathercode = hourly.get("weathercode", [])
         windspeed = hourly.get("windspeed_10m", [])
+        temps = hourly.get("temperature_2m", [])
 
         now_hour_str = time.strftime("%Y-%m-%dT%H:00", time.localtime(now))
         start_idx = times.index(now_hour_str) if now_hour_str in times else 0
@@ -93,12 +95,16 @@ def get_weather_forecast():
         current_code = weathercode[start_idx] if start_idx < len(weathercode) else 0
         current_wind = windspeed[start_idx] if start_idx < len(windspeed) else None
         condition = _classify_condition(current_code, current_wind)
+        temperature_c = temps[start_idx] if start_idx < len(temps) else None
 
         _cache["ts"] = now
         _cache["rain_mm"] = rain_mm
         _cache["condition"] = condition
         _cache["probability_pct"] = probability_pct
-        return {"rain_mm": rain_mm, "condition": condition, "probability_pct": probability_pct}
+        _cache["temperature_c"] = temperature_c
+        _cache["wind_kmh"] = current_wind
+        return {"rain_mm": rain_mm, "condition": condition, "probability_pct": probability_pct,
+                "temperature_c": temperature_c, "wind_kmh": current_wind}
     except Exception as e:
         print(f"[weather] forecast lookup failed, defaulting: {e}")
-        return {"rain_mm": 0.0, "condition": "Unknown", "probability_pct": 0}
+        return {"rain_mm": 0.0, "condition": "Unknown", "probability_pct": 0, "temperature_c": None, "wind_kmh": None}
