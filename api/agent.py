@@ -26,6 +26,9 @@ import signal
 import sys
 import time
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import envload  # noqa: E402,F401  (reads ../.env first, before the settings below are read)
+
 import camera
 import crops
 import db

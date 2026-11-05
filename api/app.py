@@ -31,6 +31,7 @@ from flask import Flask, jsonify, request
 from PIL import Image
 
 sys.path.insert(0, os.path.dirname(__file__))
+import envload  # noqa: E402,F401  (reads ../.env first, before the settings below are read)
 import db  # noqa: E402
 from auth import require_api_key  # noqa: E402
 import plant_health  # noqa: E402

@@ -72,7 +72,7 @@ Devices use the profiles "Rover" and "Irrigation station". No e-mail or phone no
 
 ## 8. Names you will need
 **RPC methods.** Rover: move, turn, setSpeed, setSafety, setTurnCal, setMode/setValue, measureSoil, stop, estop, clearEstop, setLive/getLive, holdZone. Station: water, setDemo/getDemo, setLive/getLive, setPump1/2 and getPump1/2, stopAll, estop, clearEstop, getStatus.
-**Server settings (`.env`).** API_KEY, DATA_DIR, LOCATION_LAT/LON, ZONE_PUMP_MAP, ZONE_CROP_MAP (e.g. `1:tomato,2:mango`), DEFAULT_CROP, AUTO_WATER, TB_BASE_URL, TB_USERNAME, TB_PASSWORD, STATION_DEVICE_NAME, ROVER_DEVICE_NAME, AI_DEVICE_TOKEN, CAMERA_BASE_URL, CAMERA_USER, CAMERA_PASSWORD, AGENT_POLL_S (10 recommended), PHOTO_MODE (zone | timer | both), PHOTO_ARRIVAL_MAX_AGE_S, PHOTO_INTERVAL_S. Quote values that contain spaces.
+**Server settings (`.env`).** The agent and the server read `.env` themselves when they start (api/envload.py; real environment variables win), so `python3 api/agent.py` works without `source .env`. API_KEY, DATA_DIR, LOCATION_LAT/LON, ZONE_PUMP_MAP, ZONE_CROP_MAP (e.g. `1:tomato,2:mango`), DEFAULT_CROP, AUTO_WATER, TB_BASE_URL, TB_USERNAME, TB_PASSWORD, STATION_DEVICE_NAME, ROVER_DEVICE_NAME, AI_DEVICE_TOKEN, CAMERA_BASE_URL, CAMERA_USER, CAMERA_PASSWORD, AGENT_POLL_S (10 recommended), PHOTO_MODE (zone | timer | both), PHOTO_ARRIVAL_MAX_AGE_S, PHOTO_INTERVAL_S. Quote values that contain spaces.
 
 ## 9. Tests
 124 automated tests pass (`pytest`). 50 end-to-end scenarios (normal mode, seconds and turns, demo plans, plan execution) are in `tests/scenarios.py`; results are in `docs/SCENARIO_REPORT.md`. These use a simulated station and ThingsBoard. **Nothing has run on the real hardware yet.**
