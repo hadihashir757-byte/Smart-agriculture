@@ -199,11 +199,11 @@ def push_weather(now, forecast=None):
     """Sends the weather forecast to the ThingsBoard dashboard every WEATHER_PUSH_S seconds."""
     if (now - _state_float("last_weather_ts")) < WEATHER_PUSH_S:
         return "weather not due"
-    db.set_state("last_weather_ts", now)               # also on failure: tried recently, try again next interval
     if not thingsboard.AI_DEVICE_TOKEN:
         return "weather: AI_DEVICE_TOKEN not set - not shown on the dashboard"
     if not (os.environ.get("LOCATION_LAT") and os.environ.get("LOCATION_LON")):
         return "weather: LOCATION_LAT / LOCATION_LON not set"
+    db.set_state("last_weather_ts", now)               # only once it is set up: a missing setting must not use up the 15-minute slot
     if forecast is None:
         from weather import get_weather_forecast as forecast
     data = thingsboard.weather_telemetry(forecast(), now)

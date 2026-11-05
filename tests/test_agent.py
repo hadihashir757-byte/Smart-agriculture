@@ -293,3 +293,14 @@ def test_unknown_forecast_is_not_sent(monkeypatch, fake_state):
     monkeypatch.setattr(thingsboard, "push_ai_telemetry", lambda d: sent.append(d))
     out = agent.push_weather(NOW, forecast=lambda: {"rain_mm": 0.0, "condition": "Unknown", "probability_pct": 0})
     assert "unavailable" in out and sent == []
+
+
+def test_a_missing_setting_does_not_use_up_the_weather_slot(monkeypatch, fake_state):
+    monkeypatch.setattr(thingsboard, "AI_DEVICE_TOKEN", None)
+    monkeypatch.setenv("LOCATION_LAT", "11.6")
+    monkeypatch.setenv("LOCATION_LON", "75.6")
+    assert "AI_DEVICE_TOKEN" in agent.push_weather(NOW, forecast=lambda: FORECAST)
+    monkeypatch.setattr(thingsboard, "AI_DEVICE_TOKEN", "x")
+    sent = []
+    monkeypatch.setattr(thingsboard, "push_ai_telemetry", lambda d: sent.append(d))
+    assert agent.push_weather(NOW + 5, forecast=lambda: FORECAST).startswith("weather sent")     # right after the fix, not 15 min later
