@@ -6,3 +6,9 @@ data/app.db
 data/plantvillage/
 data/banana_leaf_disease/
 arduino/**/secrets.h
+
+# local environment and downloaded datasets (never commit these)
+.venv/
+venv/
+data/mango_leaf_disease/
+agent.log
