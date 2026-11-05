@@ -118,6 +118,9 @@ def _shoot(fetch=None, process_photo=None):
     if result.get("accepted"):
         pred = result.get("prediction") or {}
         return True, f"photo ok: {pred.get('label')} ({pred.get('confidence', 0):.0%}), stage {result.get('growth_stage')}"
+    if result.get("growth_stage") and "isn't available" in str(result.get("reason", "")):
+        # a crop without a disease model (for example mango): the photo was still used for the growth stage, so it is done
+        return True, f"photo ok: growth stage {result.get('growth_stage')} (no disease model for this crop)"
     return False, f"photo rejected: {result.get('reason')}"
 
 

@@ -39,6 +39,7 @@ CROP_START_THRESHOLDS = {
                                                     # shade - picked for its water profile + having a
                                                     # real trained disease model, not for shade-tolerance)
     "pepper":    {"seedling": 35, "mature": 28},
+    "mango":     {"seedling": 40, "mature": 25},  # young trees need regular water; established trees are drought tolerant
     "default":   {"seedling": 35, "mature": 30},
 }
 

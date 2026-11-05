@@ -175,6 +175,13 @@ def test_zone_photo_dark_is_not_retried(zonecam, fake_state):
     assert agent.handle_photo(at_zone_rover(light=60), NOW + 10, process_photo=GOOD, fetch=jpeg_bytes) == "photo not due"
 
 
+def test_zone_photo_for_a_crop_without_a_disease_model_still_counts(zonecam, fake_state):
+    no_model = lambda img: {"accepted": False, "reason": "Disease detection isn't available for 'mango' yet", "growth_stage": "mature"}  # noqa: E731
+    out = agent.handle_photo(at_zone_rover(), NOW, process_photo=no_model, fetch=jpeg_bytes)
+    assert out.startswith("zone 3: photo ok") and "no disease model" in out
+    assert agent.handle_photo(at_zone_rover(), NOW + 10, process_photo=no_model, fetch=jpeg_bytes) == "photo not due"      # not retried
+
+
 def test_zone_mode_ignores_the_timer(zonecam):
     assert agent.handle_photo(rover(), NOW + 99999, process_photo=GOOD, fetch=jpeg_bytes) == "photo not due"
 

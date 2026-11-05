@@ -28,8 +28,8 @@ A small farm that waters itself. A **rover** (ESP32) drives a line between plant
 1. Skip if: tank below 15 % or unknown, soil at or above 80 %, rain detected now, reading older than 15 min, same zone watered in the last 30 min, plant has a fungal disease (unless soil is critical).
 2. Critically dry (below 20 %): water even if rain is forecast.
 3. Rain forecast 5 mm or more: skip if soil is 40 % or higher, otherwise a short top-up (max 15 s, one turn).
-4. Otherwise water when soil is below the crop/stage start point (tomato 30/40, plantain 50/60, pepper 28/35, other 30/35 for mature/seedling).
-5. **How long:** soil gap to the comfortable level (tomato 60 %, plantain 70 %, pepper 60 %, seedling +5 %) × crop factor (tomato 1.0, pepper 0.85, plantain 1.25) × stage factor (seedling 0.7) × weather factor (32 °C+ ×1.2, 18 °C− ×0.85, humidity ≤30 % ×1.1, ≥85 % ×0.9), then plant-health adjustment (stress +5 s, fungal gentle). Limits 5–60 s.
+4. Otherwise water when soil is below the crop/stage start point (tomato 30/40, plantain 50/60, pepper 28/35, mango 25/40, other 30/35 for mature/seedling).
+5. **How long:** soil gap to the comfortable level (tomato 60 %, plantain 70 %, pepper 60 %, mango 50 %, seedling +5 %) × crop factor (tomato 1.0, pepper 0.85, plantain 1.25, mango 1.1) × stage factor (seedling 0.7) × weather factor (32 °C+ ×1.2, 18 °C− ×0.85, humidity ≤30 % ×1.1, ≥85 % ×0.9), then plant-health adjustment (stress +5 s, fungal gentle). Limits 5–60 s.
 6. **In how many turns:** at most 20 s per turn, 60 s rest between turns, soil re-measured after each turn, stops early at the comfortable level.
 7. The rover must be stopped at that zone, otherwise no pump starts. The server checks this and the station checks it again.
 
@@ -55,7 +55,7 @@ Telemetry: `route_phase`, `route_pos_cm`, `rain_abort`, `at_zone`, `arrival_id`.
 - **E-stop** stops everything and blocks new commands.
 - **Manual pump switches** (dashboard) bypass the tank, rover, rest and time checks and run until switched off. In demo mode they switch off after 5 minutes. E-stop still stops them.
 - `AUTO_WATER=false` is the default: the server only recommends. Turn it on only after the logs look right.
-- Soil sensor is **not calibrated yet**, so no soil percentage is sent and the AI cannot act on real readings.
+- Mango has watering rules but no disease-photo model yet (the photo is still used for the growth stage). Soil sensor is **not calibrated yet**, so no soil percentage is sent and the AI cannot act on real readings.
 
 ## 5. Data traffic (ThingsBoard free plan)
 Limits seen on the account: 500,000 messages a month, 5 dashboards (4 used), 5 devices, 200 alarms. Normal mode: each board sends all values every 5 minutes. **Live mode** (dashboard switch, auto-off after 30 min) sends every 5 s. Events (controls, e-stop, soil measurement, pump start/stop, alerts) are sent at once.
