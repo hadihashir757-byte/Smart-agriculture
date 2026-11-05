@@ -10,6 +10,7 @@ import os
 import numpy as np
 
 import db
+import crops
 import plant_health
 import thingsboard
 from crop_growth_tips import get_growth_tip  # noqa: F401  (kept for parity with app.py imports)
@@ -20,32 +21,40 @@ from plant_care_tips import get_care_tip
 QUALITY_GATE_ENABLED = os.environ.get("QUALITY_GATE_ENABLED", "true").lower() == "true"
 
 
-def process_photo(img):
-    """img: a PIL image. Returns the same JSON-able dict the /upload-image route always returned."""
+def process_photo(img, zone_id=None, crop_type=None):
+    """img: a PIL image. Returns the same JSON-able dict the /upload-image route always returned.
+    zone_id: the zone the photo shows - its crop, growth baseline and health result are kept per zone.
+    crop_type: overrides the crop (otherwise ZONE_CROP_MAP / the latest reading / DEFAULT_CROP)."""
     img = img.convert("RGB")
     rgb_array = np.array(img)
 
     ok, reason, metrics = check_quality(rgb_array)
     if QUALITY_GATE_ENABLED and not ok:
-        db.insert_plant_health_prediction(None, None, accepted=False, reject_reason=reason)
+        db.insert_plant_health_prediction(None, None, accepted=False, reject_reason=reason, zone_id=zone_id)
         return {"accepted": False, "reason": reason, "metrics": metrics}
 
     current_ratio = plant_pixel_ratio(rgb_array)
-    baseline = db.get_growth_baseline()
+    baseline = db.get_growth_baseline(zone_id)
     if baseline is None:
-        db.set_growth_baseline(current_ratio)
+        db.set_growth_baseline(current_ratio, zone_id)
         stage = "seedling"      # first accepted photo defines the baseline
     else:
         stage = estimate_growth_stage(current_ratio, baseline["baseline_ratio"])
 
-    latest_reading = db.latest_sensor_reading()
-    crop_type = ((latest_reading["crop_type"] if latest_reading and latest_reading["crop_type"]
-                  else os.environ.get("DEFAULT_CROP", "tomato")).lower())
+    if crop_type:
+        crop_type = str(crop_type).lower()
+    elif zone_id is not None:
+        crop_type = crops.crop_for_zone(zone_id)
+    else:
+        latest_reading = db.latest_sensor_reading()
+        crop_type = ((latest_reading["crop_type"] if latest_reading and latest_reading["crop_type"]
+                      else os.environ.get("DEFAULT_CROP", "tomato")).lower())
 
     if not plant_health.supported_crop(crop_type):
         db.insert_plant_health_prediction(
             predicted_class=None, confidence=None, accepted=False,
-            reject_reason=f"disease detection not available for crop_type={crop_type}", growth_stage=stage)
+            reject_reason=f"disease detection not available for crop_type={crop_type}", growth_stage=stage,
+            zone_id=zone_id)
         return {"accepted": False,
                 "reason": f"Disease detection isn't available for '{crop_type}' yet - "
                           f"supported crops: {', '.join(sorted(plant_health.MODEL_PATHS))}.",
@@ -56,7 +65,7 @@ def process_photo(img):
     db.insert_plant_health_prediction(
         predicted_class=result["raw_class"] or "uncertain", confidence=result["confidence"],
         accepted=is_confident, reject_reason=None if is_confident else "low confidence",
-        growth_stage=stage, top_predictions=result["top_predictions"])
+        growth_stage=stage, top_predictions=result["top_predictions"], zone_id=zone_id)
 
     if is_confident:    # show on the ThingsBoard dashboard (best-effort, never raises)
         thingsboard.push_ai_telemetry(thingsboard.plant_telemetry(

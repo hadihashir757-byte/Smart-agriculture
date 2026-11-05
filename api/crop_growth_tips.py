@@ -26,6 +26,14 @@ GROWTH_TIPS = {
         "two at a time so the main plant isn't competing with its own offshoots for "
         "water and nutrients."
     ),
+    "mango": (
+        "Mango loves full sun (6-8 hours) and well-drained soil. Young trees need regular, "
+        "deep watering to build roots; established trees are drought tolerant and prefer "
+        "deep, less frequent watering - never leave the soil waterlogged, because soggy "
+        "roots rot. A layer of mulch keeps the soil moist and cool, and light pruning "
+        "after the harvest keeps the tree open to sun and air. Protect young trees from "
+        "strong wind."
+    ),
 }
 
 DEFAULT_GROWTH_TIP = "No specific growth tips available for this crop type yet."

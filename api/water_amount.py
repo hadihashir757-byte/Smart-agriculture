@@ -4,9 +4,9 @@ The go / no-go decision stays in watering.decide(). Once it says "water", this m
 amount from the crop, its growth stage, how far the soil is below its comfortable level, the weather
 and the plant's health, then splits it into short turns (soak time between them).
 
-  target moisture  : tomato 60 % (seedling 65), pepper 60 % (65), plantain 70 % (75), other 60 % (65)
+  target moisture  : tomato 60 % (seedling 65), pepper 60 % (65), plantain 70 % (75), mango 50 % (60), other 60 % (65)
   seconds          : soil gap (target - soil) x crop factor x stage factor x weather factor
-  crop factor      : tomato 1.0 | pepper 0.85 | plantain 1.25 | other 1.0
+  crop factor      : tomato 1.0 | pepper 0.85 | plantain 1.25 | mango 1.1 | other 1.0
   stage factor     : seedling 0.7 (small root zone) | mature 1.0
   weather factor   : 32 C or hotter x1.2 | 18 C or cooler x0.85 | air humidity <= 30 % x1.1 | >= 85 % x0.9
   plant health     : stress +5 s, fungal disease: gentle (<= 15 s), see watering._health_adjust
@@ -21,9 +21,10 @@ TARGET_PCT = {
     "tomato": {"seedling": 65, "mature": 60},
     "plantain": {"seedling": 75, "mature": 70},
     "pepper": {"seedling": 65, "mature": 60},
+    "mango": {"seedling": 60, "mature": 50},
     "default": {"seedling": 65, "mature": 60},
 }
-CROP_FACTOR = {"tomato": 1.0, "pepper": 0.85, "plantain": 1.25, "default": 1.0}
+CROP_FACTOR = {"tomato": 1.0, "pepper": 0.85, "plantain": 1.25, "mango": 1.1, "default": 1.0}
 STAGE_FACTOR = {"seedling": 0.7, "mature": 1.0}
 MIN_TOTAL_S, MAX_TOTAL_S = 5, 60
 TURN_MAX_S = 20

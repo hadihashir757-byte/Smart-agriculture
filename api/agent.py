@@ -27,6 +27,7 @@ import sys
 import time
 
 import camera
+import crops
 import db
 import plan_runner
 import thingsboard
@@ -37,7 +38,6 @@ POLL_S = int(os.environ.get("AGENT_POLL_S", "60"))
 PHOTO_INTERVAL_S = int(os.environ.get("PHOTO_INTERVAL_S", "1800"))
 PHOTO_RETRY_S = int(os.environ.get("PHOTO_RETRY_S", "300"))
 MIN_LIGHT_PERCENT = float(os.environ.get("MIN_LIGHT_PERCENT", "15"))
-DEFAULT_CROP = os.environ.get("DEFAULT_CROP", "tomato")
 PHOTO_MODE = os.environ.get("PHOTO_MODE", "zone").strip().lower()      # zone | timer | both
 PHOTO_ARRIVAL_MAX_AGE_S = int(os.environ.get("PHOTO_ARRIVAL_MAX_AGE_S", "150"))
 
@@ -96,14 +96,14 @@ def handle_soil(rover, now, evaluate_zone, run_plan=None):
         "rain_detected": _bool(rover.get("rain_detected", (False,))[0]),
         "reading_ts": ts_ms / 1000.0,
     }
-    result = evaluate_zone(zone_id, readings, DEFAULT_CROP)
+    result = evaluate_zone(zone_id, readings, crops.crop_for_zone(zone_id))
     if result.get("plan") and result.get("auto_water") and run_plan is not False:
         outcome = (run_plan or plan_runner.run)(result["plan"])
         return f"zone {zone_id}: plan {outcome['outcome']} - {outcome['summary']}"
     return f"zone {zone_id}: {result['decision']} {result['seconds']}s [{result['status']}] - {result['reason']}"
 
 
-def _shoot(fetch=None, process_photo=None):
+def _shoot(fetch=None, process_photo=None, zone_id=None):
     """Takes one photo and runs the plant-health pipeline. Returns (accepted, text)."""
     try:
         data = (fetch or camera.fetch_snapshot)()
@@ -114,10 +114,13 @@ def _shoot(fetch=None, process_photo=None):
     if process_photo is None:
         from photo_pipeline import process_photo as _pp
         process_photo = _pp
-    result = process_photo(img)
+    result = process_photo(img) if zone_id is None else process_photo(img, zone_id=zone_id)
     if result.get("accepted"):
         pred = result.get("prediction") or {}
         return True, f"photo ok: {pred.get('label')} ({pred.get('confidence', 0):.0%}), stage {result.get('growth_stage')}"
+    if result.get("growth_stage") and "isn't available" in str(result.get("reason", "")):
+        # a crop without a disease model (for example mango): the photo was still used for the growth stage, so it is done
+        return True, f"photo ok: growth stage {result.get('growth_stage')} (no disease model for this crop)"
     return False, f"photo rejected: {result.get('reason')}"
 
 
@@ -145,7 +148,11 @@ def photo_on_arrival(rover, now, process_photo=None, fetch=None):
         db.set_state("last_arrival_id", arrival_id)         # dark: no point trying again at this zone
         return dark
     zone = rover.get("zone_id", (None,))[0]
-    ok, text = _shoot(fetch, process_photo)
+    try:
+        zone_id = int(float(zone))
+    except (TypeError, ValueError):
+        zone_id = None
+    ok, text = _shoot(fetch, process_photo, zone_id)
     if ok:
         db.set_state("last_arrival_id", arrival_id)
         db.set_state("last_photo_ts", now)
