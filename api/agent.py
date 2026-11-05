@@ -40,6 +40,7 @@ PHOTO_RETRY_S = int(os.environ.get("PHOTO_RETRY_S", "300"))
 MIN_LIGHT_PERCENT = float(os.environ.get("MIN_LIGHT_PERCENT", "15"))
 PHOTO_MODE = os.environ.get("PHOTO_MODE", "zone").strip().lower()      # zone | timer | both
 PHOTO_ARRIVAL_MAX_AGE_S = int(os.environ.get("PHOTO_ARRIVAL_MAX_AGE_S", "150"))
+WEATHER_PUSH_S = int(os.environ.get("WEATHER_PUSH_S", "900"))          # how often the forecast is sent to the dashboard
 
 ROVER_KEYS = ["soil_moisture_percent", "temperature_c", "humidity_percent", "light_percent",
               "rain_detected", "zone_id", "event", "arrival_id", "at_zone"]
@@ -191,6 +192,24 @@ def handle_photo(rover, now, process_photo=None, fetch=None):
     return "; ".join(real) if real else "photo not due"
 
 
+def push_weather(now, forecast=None):
+    """Sends the weather forecast to the ThingsBoard dashboard every WEATHER_PUSH_S seconds."""
+    if (now - _state_float("last_weather_ts")) < WEATHER_PUSH_S:
+        return "weather not due"
+    db.set_state("last_weather_ts", now)               # also on failure: tried recently, try again next interval
+    if not thingsboard.AI_DEVICE_TOKEN:
+        return "weather: AI_DEVICE_TOKEN not set - not shown on the dashboard"
+    if not (os.environ.get("LOCATION_LAT") and os.environ.get("LOCATION_LON")):
+        return "weather: LOCATION_LAT / LOCATION_LON not set"
+    if forecast is None:
+        from weather import get_weather_forecast as forecast
+    data = thingsboard.weather_telemetry(forecast(), now)
+    if not data:
+        return "weather: forecast unavailable"
+    thingsboard.push_ai_telemetry(data)
+    return f"weather sent to the dashboard: {data['ai_weather_summary']}"
+
+
 def tick(now=None, evaluate_zone=None):
     now = time.time() if now is None else now
     if not thingsboard.configured():
@@ -200,7 +219,7 @@ def tick(now=None, evaluate_zone=None):
         evaluate_zone = _ez
     rover = thingsboard.latest_with_ts(ROVER_DEVICE_NAME, ROVER_KEYS)
     notes = []
-    for step in (lambda: handle_photo(rover, now), lambda: handle_soil(rover, now, evaluate_zone)):   # photo first: the decision then uses a fresh plant-health result
+    for step in (lambda: handle_photo(rover, now), lambda: handle_soil(rover, now, evaluate_zone), lambda: push_weather(now)):   # photo first: the decision then uses a fresh plant-health result
         try:
             notes.append(step())
         except Exception as e:  # noqa: BLE001 - one failing job must not stop the other
@@ -226,7 +245,7 @@ def main():
     while not _stop:
         try:
             for n in tick():
-                if n not in ("no new soil measurement", "photo not due"):
+                if n not in ("no new soil measurement", "photo not due", "weather not due"):
                     log(n)
         except Exception as e:  # noqa: BLE001
             log(f"check failed (will try again): {e.__class__.__name__}: {e}")
