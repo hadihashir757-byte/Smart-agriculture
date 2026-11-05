@@ -91,6 +91,48 @@ CARE_TIPS = {
         "an eye out for early leaf spotting, which is the first sign of most banana leaf "
         "diseases."
     ),
+
+    # Mango - class names come from train_plant_health_mango.py ("Mango___" + the dataset's folder name).
+    # General guidance only; ask a local agriculture officer which sprays are allowed and right for your area.
+    "Mango___Anthracnose": (
+        "Fungal disease that makes dark, sunken spots on leaves, flowers and fruit, and is worse in humid, "
+        "rainy weather. Remove and destroy affected leaves and twigs, avoid watering over the leaves, prune so "
+        "air can move through the tree, and ask a local expert about a copper-based fungicide around flowering."
+    ),
+    "Mango___Bacterial_Canker": (
+        "Bacterial disease with angular black spots that often have a yellow ring. It spreads in rain, wind and "
+        "through wounds. Prune and destroy infected parts, disinfect tools after each cut, avoid hurting the "
+        "leaves and bark, and ask a local expert about a copper spray."
+    ),
+    "Mango___Cutting_Weevil": (
+        "A pest, not a disease: a small weevil that cuts the tips and edges of young leaves. Collect and destroy "
+        "the cut leaves, check new shoots often, and ask a local expert about a suitable control if it keeps "
+        "coming back."
+    ),
+    "Mango___Die_Back": (
+        "Fungal disease where twigs and branches dry from the tip backwards. Cut the dry branch back to healthy "
+        "wood (about 10-15 cm below the damage), burn or bin the cuttings, disinfect the tool, and seal large "
+        "cuts. Keep the tree watered and fed, because stressed trees are hit hardest."
+    ),
+    "Mango___Gall_Midge": (
+        "A pest, not a disease: tiny flies whose larvae make small bumps (galls) on young leaves and shoots. "
+        "Remove and destroy leaves with galls, and loosen the soil under the tree so the pupae are exposed. "
+        "Ask a local expert about a control for severe cases."
+    ),
+    "Mango___Healthy": (
+        "No problem detected - keep up the current watering and care routine, and keep an eye out for spots, "
+        "white powder or curled leaves, which are the first signs of the common mango problems."
+    ),
+    "Mango___Powdery_Mildew": (
+        "Fungal disease that shows as a white powdery coating on young leaves, flower clusters and small fruit, "
+        "and can make flowers drop. Spray a sulphur-based or other approved fungicide at the first sign (ask a "
+        "local expert), and prune so the tree is open and dry."
+    ),
+    "Mango___Sooty_Mould": (
+        "A black, sooty film on the leaves that grows on the sticky honeydew left by sap-sucking insects "
+        "(hoppers, scale insects, mealybugs). The mould itself is secondary: control those insects, and wash "
+        "the film off with water once they are under control."
+    ),
 }
 
 DEFAULT_TIP = "No specific guidance available for this result - monitor the plant and consider consulting a local expert if symptoms worsen."

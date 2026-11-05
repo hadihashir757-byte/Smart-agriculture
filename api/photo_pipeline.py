@@ -84,7 +84,7 @@ def _process(img, zone_id=None, crop_type=None):
             zone_id=zone_id)
         return {"accepted": False,
                 "reason": f"Disease detection isn't available for '{crop_type}' yet - "
-                          f"supported crops: {', '.join(sorted(plant_health.MODEL_PATHS))}.",
+                          f"supported crops: {', '.join(sorted(c for c in plant_health.MODEL_PATHS if plant_health.supported_crop(c)))}.",
                 "growth_stage": stage, "metrics": metrics}
 
     result = plant_health.predict(img, crop_type=crop_type)
