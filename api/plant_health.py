@@ -1,6 +1,6 @@
 """Plant Health inference: loads the trained model(s) once and exposes predict().
 
-Two independent models now, one per crop with a trained disease classifier:
+Independent models, one per crop with a trained disease classifier (mango once you have trained it):
   - tomato: see train_plant_health.py (PlantVillage tomato subset, 96.5% test acc)
   - plantain: see train_plant_health_plantain.py (BananaLSD dataset, 95.2% test acc)
 Both use the same hand-crafted color/texture features (feature_extraction.py)
@@ -21,6 +21,7 @@ from plant_care_tips import get_care_tip
 MODEL_PATHS = {
     "tomato": os.path.join(os.path.dirname(__file__), "..", "models", "plant_health_model.joblib"),
     "plantain": os.path.join(os.path.dirname(__file__), "..", "models", "plant_health_model_plantain.joblib"),
+    "mango": os.path.join(os.path.dirname(__file__), "..", "models", "plant_health_model_mango.joblib"),   # exists after train_plant_health_mango.py
 }
 
 CONFIDENCE_THRESHOLD = 0.55  # below this, report "uncertain" instead of a guess
@@ -29,7 +30,9 @@ _model_bundles = {}  # crop_type -> loaded bundle, cached after first use
 
 
 def supported_crop(crop_type):
-    return (crop_type or "").lower() in MODEL_PATHS
+    """True when the crop has a trained model FILE (mango has none until it is trained)."""
+    path = MODEL_PATHS.get((crop_type or "").lower())
+    return bool(path) and os.path.exists(path)
 
 
 def _load(crop_type):

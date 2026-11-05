@@ -112,3 +112,32 @@ def test_a_dashboard_failure_never_breaks_the_photo_result(tmpdb, monkeypatch):
     def boom(d): raise RuntimeError("thingsboard down")
     monkeypatch.setattr(photo_pipeline.thingsboard, "push_ai_telemetry", boom)
     assert photo_pipeline.process_photo(photo(), zone_id=1)["accepted"] is False
+
+
+def test_mango_has_no_disease_model_until_one_is_trained(tmp_path, monkeypatch):
+    monkeypatch.setitem(plant_health.MODEL_PATHS, "mango", str(tmp_path / "missing.joblib"))
+    assert plant_health.supported_crop("mango") is False
+    f = tmp_path / "plant_health_model_mango.joblib"
+    f.write_bytes(b"x")
+    monkeypatch.setitem(plant_health.MODEL_PATHS, "mango", str(f))
+    assert plant_health.supported_crop("mango") is True
+    assert plant_health.supported_crop("tomato") is True
+
+
+def test_mango_care_tips_cover_every_class():
+    import plant_care_tips
+    for c in ("Anthracnose", "Bacterial_Canker", "Cutting_Weevil", "Die_Back", "Gall_Midge", "Healthy",
+              "Powdery_Mildew", "Sooty_Mould"):
+        assert plant_care_tips.get_care_tip("Mango___" + c) != plant_care_tips.DEFAULT_TIP
+
+
+def test_mango_training_labels_match_the_care_tips(tmp_path, monkeypatch):
+    import train_plant_health_mango as t
+    for name in ("Powdery Mildew", "Healthy"):
+        d = tmp_path / name
+        d.mkdir()
+        (d / "a.jpg").write_bytes(b"x")
+        (d / "notes.txt").write_text("ignore me")
+    monkeypatch.setattr(t, "DATA_DIR", str(tmp_path))
+    paths, labels = t.gather_image_paths()
+    assert sorted(set(labels)) == ["Mango___Healthy", "Mango___Powdery_Mildew"] and len(paths) == 2
