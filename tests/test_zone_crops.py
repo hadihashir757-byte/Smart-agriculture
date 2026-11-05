@@ -141,3 +141,16 @@ def test_mango_training_labels_match_the_care_tips(tmp_path, monkeypatch):
     monkeypatch.setattr(t, "DATA_DIR", str(tmp_path))
     paths, labels = t.gather_image_paths()
     assert sorted(set(labels)) == ["Mango___Healthy", "Mango___Powdery_Mildew"] and len(paths) == 2
+
+
+def test_env_file_is_loaded_but_never_overrides_real_variables(tmp_path, monkeypatch):
+    import envload
+    f = tmp_path / ".env"
+    f.write_text('TB_USERNAME=me@example.com\nTB_PASSWORD="pass word#1"\nMY_TEST_SETTING=from_file  # a comment\n')
+    monkeypatch.delenv("TB_USERNAME", raising=False)
+    monkeypatch.delenv("TB_PASSWORD", raising=False)
+    monkeypatch.setenv("MY_TEST_SETTING", "from_shell")
+    assert envload.load(str(f)) is True
+    assert os.environ["TB_USERNAME"] == "me@example.com" and os.environ["TB_PASSWORD"] == "pass word#1"
+    assert os.environ["MY_TEST_SETTING"] == "from_shell"
+    monkeypatch.delenv("TB_USERNAME"); monkeypatch.delenv("TB_PASSWORD")
