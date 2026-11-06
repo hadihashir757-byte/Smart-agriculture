@@ -44,9 +44,12 @@ def _num(payload, key):
         raise ValueError(f"{key} must be a number")
 
 
-def evaluate_zone(zone_id, readings, crop_type, tank_hint=None):
+def evaluate_zone(zone_id, readings, crop_type, tank_hint=None, advice_only=False):
     """Decide (and, if AUTO_WATER, act) for one zone. Used by /zone-event and by the background agent.
-    tank_hint: a tank level supplied by the caller, used only if the station cannot be asked."""
+    tank_hint: a tank level supplied by the caller, used only if the station cannot be asked.
+    advice_only: for the dashboard's "Zone 1 check" button. The decision is worked out as if the rover stands at the zone
+    and shown on the dashboard, but nothing is ever sent to the station (AUTO_WATER is ignored)."""
+    auto = AUTO_WATER and not advice_only
     # Latest photo result (ignored if too old). Only the growth stage influences the
     # watering thresholds; disease/health is reported, never used to water more.
     health = db.latest_accepted_plant_health(max_age_s=watering.PLANT_HEALTH_MAX_AGE_S, zone_id=zone_id)
@@ -79,7 +82,7 @@ def evaluate_zone(zone_id, readings, crop_type, tank_hint=None):
             tank_percent, tank_note = 100, "tank level unknown (no ThingsBoard) - station will enforce it"
 
     if demo:
-        return _demo_plan(zone_id, readings, rain_mm, tank_percent, tank_note, health_summary, plant_stage, rover)
+        return _demo_plan(zone_id, readings, rain_mm, tank_percent, tank_note, health_summary, plant_stage, rover, advice_only)
 
     result = watering.decide(
         zone_id, readings, crop_type=crop_type, plant_stage=plant_stage, rain_forecast_mm=rain_mm,
@@ -88,7 +91,7 @@ def evaluate_zone(zone_id, readings, crop_type, tank_hint=None):
     )
 
     # The station only waters while the rover is stopped AT this zone - say so here too (same rule as demo mode).
-    block = irrigation_plan.rover_block_text(zone_id, rover)
+    block = None if advice_only else irrigation_plan.rover_block_text(zone_id, rover)
     if result["decision"] == "water" and block:
         result = {**result, "decision": "skip", "seconds": 0, "command": None, "reason": block}
 
@@ -104,12 +107,12 @@ def evaluate_zone(zone_id, readings, crop_type, tank_hint=None):
 
     row_id = db.insert_watering_decision(
         zone_id, result["pump"], result["seconds"], result["decision"], result["reason"], None,
-        "skipped" if result["decision"] == "skip" else ("recommended" if not AUTO_WATER else "pending"),
+        "skipped" if result["decision"] == "skip" else ("recommended" if not auto else "pending"),
         {**result["inputs"], "plan": {k: v for k, v in plan.items() if k != "text"} if plan else None},
     )
 
     status = "skipped" if result["decision"] == "skip" else "dry_run"
-    if plan and AUTO_WATER:
+    if plan and auto:
         if not thingsboard.configured():
             status = "send_failed"
             result["reason"] += " | AUTO_WATER is on but TB_USERNAME/TB_PASSWORD are not set"
@@ -136,7 +139,7 @@ def evaluate_zone(zone_id, readings, crop_type, tank_hint=None):
     return {
         "decision": result["decision"], "zone_id": zone_id, "pump": result["pump"],
         "seconds": result["seconds"], "turns": plan["turns"] if plan else [], "reason": result["reason"],
-        "status": status, "auto_water": AUTO_WATER, "station_reply": None, "tank_note": tank_note or None,
+        "status": status, "auto_water": auto, "station_reply": None, "tank_note": tank_note or None,
         "plant_health": health_summary, "plan": plan,
     }
 
@@ -148,7 +151,7 @@ def _age(readings):
     return None if ts is None else max(0.0, time.time() - ts)
 
 
-def _demo_plan(zone_id, readings, rain_mm, tank_percent, tank_note, health_summary, plant_stage, rover=None):
+def _demo_plan(zone_id, readings, rain_mm, tank_percent, tank_note, health_summary, plant_stage, rover=None, advice_only=False):
     """Demo mode: build the pulse plan (see irrigation_plan.py). The background agent runs it."""
     pump = watering.parse_zone_pump_map().get(zone_id)
     if pump is None:
@@ -158,7 +161,7 @@ def _demo_plan(zone_id, readings, rain_mm, tank_percent, tank_note, health_summa
                                          bool(readings.get("rain_detected")),
                                          None if tank_percent is None else float(tank_percent), rover=rover)
     decision = "water" if plan["run"] else "skip"
-    status = ("plan_ready" if AUTO_WATER else "dry_run") if plan["run"] else "skipped"
+    status = ("plan_ready" if AUTO_WATER and not advice_only else "dry_run") if plan["run"] else "skipped"
     db.insert_watering_decision(zone_id, pump, plan.get("pulse_s", 0), decision, plan["text"], None, status,
                                 {"readings": readings, "rain_forecast_mm": rain_mm, "tank_percent": tank_percent,
                                  "demo": True, "plan": {k: v for k, v in plan.items() if k != "text"}})
@@ -174,7 +177,7 @@ def _demo_plan(zone_id, readings, rain_mm, tank_percent, tank_note, health_summa
         "ai_plant_stage": plant_stage,
     })
     return {"decision": decision, "zone_id": zone_id, "pump": pump, "seconds": plan.get("pulse_s", 0),
-            "reason": plan["text"], "status": status, "auto_water": AUTO_WATER, "station_reply": None,
+            "reason": plan["text"], "status": status, "auto_water": AUTO_WATER and not advice_only, "station_reply": None,
             "tank_note": tank_note or None, "plant_health": health_summary, "demo": True,
             "plan": plan if plan["run"] else None}
 

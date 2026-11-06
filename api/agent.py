@@ -18,6 +18,18 @@ Settings (environment variables, all optional except the ThingsBoard login and t
   PHOTO_ARRIVAL_MAX_AGE_S=150  (an arrival older than this is too late for a photo: the rover has left)
   MIN_LIGHT_PERCENT=15         (no photos when the rover's light sensor reads below this)
   MAX_READING_AGE_S=900        (a soil reading older than this is never acted on)
+  PHOTO_REQUEST_ZONE=1         (zone the "Take photo" dashboard button is for)
+  PHOTO_REQUEST_MAX_AGE_S=300  (a button press older than this is ignored, e.g. one made while the agent was off)
+
+The dashboard's "Take photo now" button sets the server attribute `photo_request` (the time of the click) on the
+rover device. Every check the agent looks at it; a new value means: take one photo right now (even in the dark or
+with the rover away from the zone), analyse it and show the result on the dashboard. Use AGENT_POLL_S=10 so it
+answers within about 10 seconds.
+
+The dashboard's "Zone 1 check" button sets `zone_check_request` the same way. The AI then acts as if the rover is
+at the zone: it takes a photo and works out the irrigation advice (decision, seconds, reason, report) from the newest
+soil measurement (not older than MAX_READING_AGE_S - press "Measure soil" first). It only ADVISES: nothing is sent
+to the station from this button.
 """
 
 import io
@@ -43,6 +55,8 @@ PHOTO_RETRY_S = int(os.environ.get("PHOTO_RETRY_S", "300"))
 MIN_LIGHT_PERCENT = float(os.environ.get("MIN_LIGHT_PERCENT", "15"))
 PHOTO_MODE = os.environ.get("PHOTO_MODE", "zone").strip().lower()      # zone | timer | both
 PHOTO_ARRIVAL_MAX_AGE_S = int(os.environ.get("PHOTO_ARRIVAL_MAX_AGE_S", "150"))
+PHOTO_REQUEST_ZONE = int(os.environ.get("PHOTO_REQUEST_ZONE", "1"))
+PHOTO_REQUEST_MAX_AGE_S = int(os.environ.get("PHOTO_REQUEST_MAX_AGE_S", "300"))
 WEATHER_PUSH_S = int(os.environ.get("WEATHER_PUSH_S", "900"))          # how often the forecast is sent to the dashboard
 
 ROVER_KEYS = ["soil_moisture_percent", "temperature_c", "humidity_percent", "light_percent",
@@ -125,7 +139,7 @@ def _shoot(fetch=None, process_photo=None, zone_id=None):
     if result.get("growth_stage") and "isn't available" in str(result.get("reason", "")):
         # a crop without a disease model (for example mango): the photo was still used for the growth stage, so it is done
         return True, f"photo ok: growth stage {result.get('growth_stage')} (no disease model for this crop)"
-    return False, f"photo rejected: {result.get('reason')}"
+    return False, f"photo rejected: {result.get('reason') or 'the model was not confident enough (low confidence)'}"
 
 
 def _too_dark(rover):
@@ -195,6 +209,93 @@ def handle_photo(rover, now, process_photo=None, fetch=None):
     return "; ".join(real) if real else "photo not due"
 
 
+def _new_click(read_request, state_key, now):
+    """Looks at a dashboard button's attribute. Returns None when there is no NEW click, "old" when the click is
+    older than PHOTO_REQUEST_MAX_AGE_S (ignored), or "new" for a fresh click. A click is remembered first, so one
+    click can never be handled twice."""
+    value = read_request()
+    if value in (None, ""):
+        return None
+    value = str(value).split(".")[0]
+    if value == str(db.get_state(state_key, "")):
+        return None
+    db.set_state(state_key, value)
+    try:
+        age_s = now - int(value) / 1000.0                # the button stores the click time in milliseconds
+    except ValueError:
+        age_s = 0
+    return "old" if age_s > PHOTO_REQUEST_MAX_AGE_S else "new"
+
+
+def _stamp(now):
+    return time.strftime("%d %b %H:%M", time.localtime(now))
+
+
+def handle_photo_request(now, process_photo=None, fetch=None, read_request=None, push=None):
+    """The dashboard's "Take photo now" button: a NEW value of the rover attribute `photo_request` means one photo
+    right now. The photo goes through the same pipeline (quality gate, growth stage, disease model) and the result
+    appears on the dashboard cards; a one-line result is also sent as `ai_photo_status`."""
+    read_request = read_request or (lambda: thingsboard.server_attribute(ROVER_DEVICE_NAME, "photo_request"))
+    push = push or thingsboard.push_ai_telemetry
+    click = _new_click(read_request, "last_photo_request", now)
+    if click is None:
+        return "photo request not due"
+    if click == "old":
+        return "photo request is old - ignored"
+    if not camera.configured():
+        text = "camera not configured (CAMERA_BASE_URL)"
+    else:
+        ok, text = _shoot(fetch, process_photo, PHOTO_REQUEST_ZONE)
+        if ok:
+            db.set_state("last_photo_ts", now)
+    push({"ai_photo_status": f"{_stamp(now)} - {text}"})
+    return f"button: {text}"
+
+
+def handle_zone_check(now, evaluate_zone=None, process_photo=None, fetch=None, read_request=None, push=None, rover=None):
+    """The dashboard's "Zone 1 check" button (rover attribute `zone_check_request`). The AI treats it as "the rover
+    is at the zone now": it takes a photo for the zone, then works out the irrigation advice from the newest soil
+    measurement, the plant result, the weather and the tank, and shows it on the dashboard decision cards.
+    ADVICE ONLY: nothing is ever sent to the station from this button, whatever AUTO_WATER says."""
+    read_request = read_request or (lambda: thingsboard.server_attribute(ROVER_DEVICE_NAME, "zone_check_request"))
+    push = push or thingsboard.push_ai_telemetry
+    click = _new_click(read_request, "last_zone_check", now)
+    if click is None:
+        return "zone check not due"
+    if click == "old":
+        return "zone check is old - ignored"
+    zone_id = PHOTO_REQUEST_ZONE
+    notes = []
+    if camera.configured():
+        ok, text = _shoot(fetch, process_photo, zone_id)
+        notes.append(text)
+        if ok:
+            db.set_state("last_photo_ts", now)
+    else:
+        notes.append("no photo (camera not configured)")
+    rover = rover if rover is not None else thingsboard.latest_with_ts(ROVER_DEVICE_NAME, ROVER_KEYS)
+    soil = rover.get("soil_moisture_percent")
+    if soil is None or now - soil[1] / 1000.0 > watering.MAX_READING_AGE_S:
+        notes.append("no recent soil measurement - press Measure soil, then Zone 1 check again")
+        push({"ai_photo_status": f"{_stamp(now)} - Zone {zone_id} check: " + "; ".join(notes)})
+        return "zone check: " + "; ".join(notes)
+    readings = {
+        "soil_moisture_percent": _float(soil[0]),
+        "temperature_c": _float(rover.get("temperature_c", (None,))[0]),
+        "humidity_percent": _float(rover.get("humidity_percent", (None,))[0]),
+        "light_percent": _float(rover.get("light_percent", (None,))[0]),
+        "rain_detected": _bool(rover.get("rain_detected", (False,))[0]),
+        "reading_ts": soil[1] / 1000.0,
+    }
+    if evaluate_zone is None:
+        from rover_routes import evaluate_zone as _ez
+        evaluate_zone = _ez
+    result = evaluate_zone(zone_id, readings, crops.crop_for_zone(zone_id), advice_only=True)
+    notes.append(f"advice: {result['decision']} {result['seconds']}s (nothing was started) - {result['reason']}")
+    push({"ai_photo_status": f"{_stamp(now)} - Zone {zone_id} check: " + "; ".join(notes)})
+    return f"zone {zone_id} check: " + "; ".join(notes)
+
+
 def push_weather(now, forecast=None):
     """Sends the weather forecast to the ThingsBoard dashboard every WEATHER_PUSH_S seconds."""
     if (now - _state_float("last_weather_ts")) < WEATHER_PUSH_S:
@@ -222,7 +323,7 @@ def tick(now=None, evaluate_zone=None):
         evaluate_zone = _ez
     rover = thingsboard.latest_with_ts(ROVER_DEVICE_NAME, ROVER_KEYS)
     notes = []
-    for step in (lambda: handle_photo(rover, now), lambda: handle_soil(rover, now, evaluate_zone), lambda: push_weather(now)):   # photo first: the decision then uses a fresh plant-health result
+    for step in (lambda: handle_zone_check(now, evaluate_zone, rover=rover), lambda: handle_photo_request(now), lambda: handle_photo(rover, now), lambda: handle_soil(rover, now, evaluate_zone), lambda: push_weather(now)):   # photo first: the decision then uses a fresh plant-health result
         try:
             notes.append(step())
         except Exception as e:  # noqa: BLE001 - one failing job must not stop the other
@@ -248,7 +349,7 @@ def main():
     while not _stop:
         try:
             for n in tick():
-                if n not in ("no new soil measurement", "photo not due", "weather not due"):
+                if n not in ("no new soil measurement", "photo not due", "photo request not due", "zone check not due", "weather not due"):
                     log(n)
         except Exception as e:  # noqa: BLE001
             log(f"check failed (will try again): {e.__class__.__name__}: {e}")

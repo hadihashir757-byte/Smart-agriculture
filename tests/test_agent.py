@@ -1,6 +1,7 @@
 import io
 import os
 import sys
+import time
 
 import pytest
 
@@ -191,9 +192,11 @@ def test_tick_isolates_failures(monkeypatch, cam):
     monkeypatch.setattr(thingsboard, "latest_with_ts", lambda *a, **k: rover())
     def bad_eval(*a):
         raise ValueError("boom")
+    monkeypatch.setattr(agent, "handle_zone_check", lambda *a, **k: "zone check not due")
+    monkeypatch.setattr(agent, "handle_photo_request", lambda *a, **k: "photo request not due")
     monkeypatch.setattr(agent, "handle_photo", lambda *a, **k: "photo not due")
     notes = agent.tick(now=NOW, evaluate_zone=bad_eval)
-    assert notes[1].startswith("error: ValueError") and notes[0] == "photo not due"
+    assert notes[3].startswith("error: ValueError") and notes[2] == "photo not due" and notes[0] == "zone check not due"
 
 
 def test_tick_without_login(monkeypatch):
@@ -293,3 +296,104 @@ def test_unknown_forecast_is_not_sent(monkeypatch, fake_state):
     monkeypatch.setattr(thingsboard, "push_ai_telemetry", lambda d: sent.append(d))
     out = agent.push_weather(NOW, forecast=lambda: {"rain_mm": 0.0, "condition": "Unknown", "probability_pct": 0})
     assert "unavailable" in out and sent == []
+
+
+# ---- "Take photo now" dashboard button (attribute photo_request) ----
+def test_photo_button_takes_one_photo_per_click(zonecam, fake_state):
+    sent = []
+    click = str(NOW_MS - 3000)
+    out = agent.handle_photo_request(NOW, process_photo=GOOD, fetch=jpeg_bytes, read_request=lambda: click, push=sent.append)
+    assert out.startswith("button: photo ok") and "ai_photo_status" in sent[0]
+    # the same click is never handled twice
+    assert agent.handle_photo_request(NOW + 10, process_photo=GOOD, fetch=jpeg_bytes, read_request=lambda: click, push=sent.append) == "photo request not due"
+    assert len(sent) == 1
+    # a new click works again
+    again = str(NOW_MS + 20_000)
+    assert agent.handle_photo_request(NOW + 25, process_photo=GOOD, fetch=jpeg_bytes, read_request=lambda: again, push=sent.append).startswith("button: photo ok")
+
+
+def test_photo_button_uses_the_configured_zone(zonecam):
+    seen = []
+    def pp(img, **kw):
+        seen.append(kw.get("zone_id"))
+        return {"accepted": True, "prediction": {"label": "Healthy", "confidence": 0.9}, "growth_stage": "mature"}
+    agent.handle_photo_request(NOW, process_photo=pp, fetch=jpeg_bytes, read_request=lambda: str(NOW_MS), push=lambda d: None)
+    assert seen == [agent.PHOTO_REQUEST_ZONE]
+
+
+def test_photo_button_old_click_is_ignored(zonecam):
+    sent = []
+    old = str(NOW_MS - (agent.PHOTO_REQUEST_MAX_AGE_S + 60) * 1000)
+    out = agent.handle_photo_request(NOW, process_photo=GOOD, fetch=jpeg_bytes, read_request=lambda: old, push=sent.append)
+    assert "ignored" in out and sent == []
+
+
+def test_photo_button_without_any_click_does_nothing():
+    assert agent.handle_photo_request(NOW, read_request=lambda: None) == "photo request not due"
+
+
+def test_photo_button_camera_failure_is_reported(zonecam):
+    sent = []
+    def boom():
+        raise RuntimeError("camera offline")
+    out = agent.handle_photo_request(NOW, process_photo=GOOD, fetch=boom, read_request=lambda: str(NOW_MS), push=sent.append)
+    assert "photo failed" in out and "photo failed" in sent[0]["ai_photo_status"]
+
+
+# ---- "Zone 1 check" dashboard button (attribute zone_check_request): photo + irrigation advice, never waters ----
+class AdviceRecorder:
+    def __init__(self):
+        self.calls = []
+
+    def __call__(self, zone_id, readings, crop, **kw):
+        self.calls.append((zone_id, readings, crop, kw))
+        return {"decision": "water", "seconds": 25, "status": "dry_run", "reason": "soil is dry"}
+
+
+def test_zone_check_takes_photo_then_gives_advice_only(zonecam):
+    sent, rec = [], AdviceRecorder()
+    r = rover(soil=21.0, soil_ts=NOW_MS - 60_000)
+    out = agent.handle_zone_check(NOW, rec, process_photo=GOOD, fetch=jpeg_bytes, read_request=lambda: str(NOW_MS - 2000),
+                                  push=sent.append, rover=r)
+    assert "photo ok" in out and "water 25s" in out and "nothing was started" in out
+    assert rec.calls[0][0] == agent.PHOTO_REQUEST_ZONE and rec.calls[0][3] == {"advice_only": True}      # never waters
+    assert rec.calls[0][1]["soil_moisture_percent"] == 21.0
+    assert "ai_photo_status" in sent[0]
+
+
+def test_zone_check_handles_each_click_once(zonecam):
+    rec, click = AdviceRecorder(), str(NOW_MS - 1000)
+    kw = dict(process_photo=GOOD, fetch=jpeg_bytes, read_request=lambda: click, push=lambda d: None, rover=rover())
+    agent.handle_zone_check(NOW, rec, **kw)
+    assert agent.handle_zone_check(NOW + 10, rec, **kw) == "zone check not due"
+    assert len(rec.calls) == 1
+
+
+def test_zone_check_without_recent_soil_asks_for_a_measurement(zonecam):
+    sent, rec = [], AdviceRecorder()
+    old = rover(soil=21.0, soil_ts=NOW_MS - (agent.watering.MAX_READING_AGE_S + 120) * 1000)
+    out = agent.handle_zone_check(NOW, rec, process_photo=GOOD, fetch=jpeg_bytes, read_request=lambda: str(NOW_MS), push=sent.append, rover=old)
+    assert "Measure soil" in out and rec.calls == [] and "Measure soil" in sent[0]["ai_photo_status"]
+
+
+def test_zone_check_old_click_is_ignored(zonecam):
+    rec = AdviceRecorder()
+    old = str(NOW_MS - (agent.PHOTO_REQUEST_MAX_AGE_S + 60) * 1000)
+    assert "ignored" in agent.handle_zone_check(NOW, rec, read_request=lambda: old, push=lambda d: None, rover=rover())
+    assert rec.calls == []
+
+
+def test_evaluate_zone_advice_only_never_sends_water(monkeypatch):
+    import rover_routes
+    monkeypatch.setattr(rover_routes, "AUTO_WATER", True)
+    monkeypatch.setattr(rover_routes, "get_weather_forecast", lambda: {"rain_mm": 0.0})
+    monkeypatch.setattr(rover_routes.thingsboard, "configured", lambda: False)
+    monkeypatch.setattr(rover_routes.thingsboard, "push_ai_telemetry", lambda d: None)
+    monkeypatch.setattr(rover_routes.db, "insert_watering_decision", lambda *a, **k: 1)
+    monkeypatch.setattr(rover_routes.db, "update_watering_decision", lambda *a, **k: None)
+    monkeypatch.setattr(rover_routes.db, "latest_accepted_plant_health", lambda **k: None)
+    monkeypatch.setattr(rover_routes.db, "last_watering_ts", lambda z: None)
+    readings = {"soil_moisture_percent": 10.0, "temperature_c": 30.0, "humidity_percent": 50.0, "light_percent": 60.0,
+                "rain_detected": False, "reading_ts": time.time()}
+    res = rover_routes.evaluate_zone(1, readings, "mango", advice_only=True)
+    assert res["auto_water"] is False and res["status"] != "plan_ready"

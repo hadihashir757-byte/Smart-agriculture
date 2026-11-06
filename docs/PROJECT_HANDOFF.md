@@ -72,7 +72,7 @@ Devices use the profiles "Rover" and "Irrigation station". No e-mail or phone no
 
 ## 8. Names you will need
 **RPC methods.** Rover: move, turn, setSpeed, setSafety, setTurnCal, setMode/setValue, measureSoil, stop, estop, clearEstop, setLive/getLive, holdZone. Station: water, setDemo/getDemo, setLive/getLive, setPump1/2 and getPump1/2, stopAll, estop, clearEstop, getStatus.
-**Server settings (`.env`).** The agent and the server read `.env` themselves when they start (api/envload.py; real environment variables win), so `python3 api/agent.py` works without `source .env`. API_KEY, DATA_DIR, LOCATION_LAT/LON, ZONE_PUMP_MAP, ZONE_CROP_MAP (e.g. `1:tomato,2:mango`), DEFAULT_CROP, AUTO_WATER, TB_BASE_URL, TB_USERNAME, TB_PASSWORD, STATION_DEVICE_NAME, ROVER_DEVICE_NAME, AI_DEVICE_TOKEN, CAMERA_BASE_URL, CAMERA_USER, CAMERA_PASSWORD, AGENT_POLL_S (10 recommended), PHOTO_MODE (zone | timer | both), PHOTO_ARRIVAL_MAX_AGE_S, PHOTO_INTERVAL_S. Quote values that contain spaces.
+**Server settings (`.env`).** The agent and the server read `.env` themselves when they start (api/envload.py; real environment variables win), so `python3 api/agent.py` works without `source .env`. API_KEY, DATA_DIR, LOCATION_LAT/LON, ZONE_PUMP_MAP, ZONE_CROP_MAP (e.g. `1:tomato,2:mango`), DEFAULT_CROP, AUTO_WATER, TB_BASE_URL, TB_USERNAME, TB_PASSWORD, STATION_DEVICE_NAME, ROVER_DEVICE_NAME, AI_DEVICE_TOKEN, CAMERA_BASE_URL, CAMERA_USER, CAMERA_PASSWORD, AGENT_POLL_S (10 recommended), PHOTO_MODE (zone | timer | both), PHOTO_ARRIVAL_MAX_AGE_S, PHOTO_INTERVAL_S, PHOTO_REQUEST_ZONE, PHOTO_REQUEST_MAX_AGE_S. Quote values that contain spaces.
 
 ## 9. Tests
 124 automated tests pass (`pytest`). 50 end-to-end scenarios (normal mode, seconds and turns, demo plans, plan execution) are in `tests/scenarios.py`; results are in `docs/SCENARIO_REPORT.md`. These use a simulated station and ThingsBoard. **Nothing has run on the real hardware yet.**
@@ -81,7 +81,7 @@ Devices use the profiles "Rover" and "Irrigation station". No e-mail or phone no
 1. Upload rover r15 and station v0.6. Set the same shared key in both. Check relay polarity, calibrate the tank distances, wire pump power with flyback diodes.
 2. Calibrate the soil sensor (dry-air and in-water readings).
 3. Merge the PRs, update the Mac, restart the agent, fill `.env`, keep `AUTO_WATER=false`, check the AI reasoning report, then try demo mode.
-4. Install LensCast, set a password, set `CAMERA_BASE_URL`. The agent now takes one photo each time the rover arrives at a zone (`PHOTO_MODE=zone`, needs `AGENT_POLL_S=10`).
+4. Install LensCast, set a password, set `CAMERA_BASE_URL`. The agent now takes one photo each time the rover arrives at a zone (`PHOTO_MODE=zone`, needs `AGENT_POLL_S=10`). The dashboard button **Take photo now** sets the rover attribute `photo_request`; the agent sees the new value within one check, takes a photo, analyses it and shows the result on the dashboard (`ai_photo_status` gives a one-line result). The button **Zone 1 check** sets `zone_check_request`: the AI acts as if the rover is at the zone, takes a photo and shows irrigation advice (advice only, nothing is sent to the station).
 5. Not built: dashboard buttons for photo and zoom, live camera video on the dashboard (needs an HTTPS link to the Mac), alarm notifications by e-mail.
 6. Keep the Mac awake while the system runs (`sudo pmset -c sleep 0 disksleep 0`).
 

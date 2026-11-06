@@ -74,6 +74,19 @@ def latest_with_ts(device_name, keys):
     return {k: (v[0]["value"], int(v[0]["ts"])) for k, v in r.json().items() if v}
 
 
+def server_attribute(device_name, key):
+    """Value of one SERVER_SCOPE attribute of a device (None if it is not set). Used for dashboard buttons that
+    set an attribute, for example `photo_request`."""
+    dev = _device_id(device_name)
+    r = requests.get(f"{BASE}/api/plugins/telemetry/DEVICE/{dev}/values/attributes/SERVER_SCOPE",
+                     params={"keys": key}, headers=_headers(), timeout=TIMEOUT)
+    r.raise_for_status()
+    for a in r.json():
+        if a.get("key") == key:
+            return a.get("value")
+    return None
+
+
 def value_at(device_name, key, ts_ms, window_ms=120000):
     """The newest value of `key` recorded at or shortly before ts_ms (None if nothing)."""
     dev = _device_id(device_name)
