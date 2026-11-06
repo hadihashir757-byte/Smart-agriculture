@@ -378,11 +378,11 @@ def test_zone_check_with_old_soil_still_decides_and_says_it_is_an_estimate(zonec
     assert "ESTIMATE" in rec.calls[0][3]["caveat"] and "3.0 h" in rec.calls[0][3]["caveat"]
 
 
-def test_zone_check_with_no_soil_at_all_still_gets_a_decision(zonecam):
+def test_zone_check_with_no_soil_at_all_assumes_zero_percent(zonecam):
     rec = AdviceRecorder()
     out = agent.handle_zone_check(NOW, rec, process_photo=GOOD, fetch=jpeg_bytes, read_request=lambda: str(NOW_MS), push=lambda d: None, rover=rover(soil=None))
-    assert len(rec.calls) == 1 and rec.calls[0][1]["soil_moisture_percent"] is None
-    assert "no soil measurement" in rec.calls[0][3]["caveat"] and "advice:" in out
+    assert len(rec.calls) == 1 and rec.calls[0][1]["soil_moisture_percent"] == 0.0     # treated as completely dry
+    assert "ASSUMED 0%" in rec.calls[0][3]["caveat"] and "advice:" in out
 
 
 def test_zone_check_old_click_is_ignored(zonecam):

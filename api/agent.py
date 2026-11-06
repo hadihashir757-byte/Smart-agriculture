@@ -29,7 +29,7 @@ answers within about 10 seconds.
 The dashboard's "Zone 1 check" button sets `zone_check_request` the same way. The AI then acts as if the rover is
 at the zone: it takes a photo and works out the irrigation advice (decision, seconds, reason, report) from the newest
 soil measurement. It ALWAYS ends in a decision: if the soil value is old (or missing) the advice still uses the last
-known value and says so ("ESTIMATE ..."), so press "Measure soil" first for the best advice. It only ADVISES: nothing
+known value and says so ("ESTIMATE ..."); with no soil value at all it assumes 0% (completely dry) and says so, so press "Measure soil" first for the best advice. It only ADVISES: nothing
 is sent to the station from this button.
 """
 
@@ -278,14 +278,14 @@ def handle_zone_check(now, evaluate_zone=None, process_photo=None, fetch=None, r
     soil = rover.get("soil_moisture_percent")
     caveat = None
     if soil is None:
-        caveat = "ESTIMATE: no soil measurement has been recorded yet - press Measure soil for real advice"
+        caveat = "ASSUMED 0% soil moisture: no soil measurement has been recorded yet - press Measure soil for real advice"
     else:
         age_s = now - soil[1] / 1000.0
         if age_s > watering.MAX_READING_AGE_S:      # advice still uses the last known value, but says how old it is
             age_txt = f"{age_s / 3600:.1f} h" if age_s >= 3600 else f"{int(age_s / 60)} min"
             caveat = f"ESTIMATE: soil value is {age_txt} old - press Measure soil for a fresh reading"
     readings = {
-        "soil_moisture_percent": _float(soil[0]) if soil else None,
+        "soil_moisture_percent": _float(soil[0]) if soil else 0.0,       # no measurement at all: assume completely dry
         "temperature_c": _float(rover.get("temperature_c", (None,))[0]),
         "humidity_percent": _float(rover.get("humidity_percent", (None,))[0]),
         "light_percent": _float(rover.get("light_percent", (None,))[0]),
