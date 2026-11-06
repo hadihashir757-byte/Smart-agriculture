@@ -28,8 +28,9 @@ answers within about 10 seconds.
 
 The dashboard's "Zone 1 check" button sets `zone_check_request` the same way. The AI then acts as if the rover is
 at the zone: it takes a photo and works out the irrigation advice (decision, seconds, reason, report) from the newest
-soil measurement (not older than MAX_READING_AGE_S - press "Measure soil" first). It only ADVISES: nothing is sent
-to the station from this button.
+soil measurement. It ALWAYS ends in a decision: if the soil value is old (or missing) the advice still uses the last
+known value and says so ("ESTIMATE ..."), so press "Measure soil" first for the best advice. It only ADVISES: nothing
+is sent to the station from this button.
 """
 
 import io
@@ -275,22 +276,26 @@ def handle_zone_check(now, evaluate_zone=None, process_photo=None, fetch=None, r
         notes.append("no photo (camera not configured)")
     rover = rover if rover is not None else thingsboard.latest_with_ts(ROVER_DEVICE_NAME, ROVER_KEYS)
     soil = rover.get("soil_moisture_percent")
-    if soil is None or now - soil[1] / 1000.0 > watering.MAX_READING_AGE_S:
-        notes.append("no recent soil measurement - press Measure soil, then Zone 1 check again")
-        push({"ai_photo_status": f"{_stamp(now)} - Zone {zone_id} check: " + "; ".join(notes)})
-        return "zone check: " + "; ".join(notes)
+    caveat = None
+    if soil is None:
+        caveat = "ESTIMATE: no soil measurement has been recorded yet - press Measure soil for real advice"
+    else:
+        age_s = now - soil[1] / 1000.0
+        if age_s > watering.MAX_READING_AGE_S:      # advice still uses the last known value, but says how old it is
+            age_txt = f"{age_s / 3600:.1f} h" if age_s >= 3600 else f"{int(age_s / 60)} min"
+            caveat = f"ESTIMATE: soil value is {age_txt} old - press Measure soil for a fresh reading"
     readings = {
-        "soil_moisture_percent": _float(soil[0]),
+        "soil_moisture_percent": _float(soil[0]) if soil else None,
         "temperature_c": _float(rover.get("temperature_c", (None,))[0]),
         "humidity_percent": _float(rover.get("humidity_percent", (None,))[0]),
         "light_percent": _float(rover.get("light_percent", (None,))[0]),
         "rain_detected": _bool(rover.get("rain_detected", (False,))[0]),
-        "reading_ts": soil[1] / 1000.0,
+        "reading_ts": soil[1] / 1000.0 if soil else None,
     }
     if evaluate_zone is None:
         from rover_routes import evaluate_zone as _ez
         evaluate_zone = _ez
-    result = evaluate_zone(zone_id, readings, crops.crop_for_zone(zone_id), advice_only=True)
+    result = evaluate_zone(zone_id, readings, crops.crop_for_zone(zone_id), advice_only=True, caveat=caveat)
     notes.append(f"advice: {result['decision']} {result['seconds']}s (nothing was started) - {result['reason']}")
     push({"ai_photo_status": f"{_stamp(now)} - Zone {zone_id} check: " + "; ".join(notes)})
     return f"zone {zone_id} check: " + "; ".join(notes)

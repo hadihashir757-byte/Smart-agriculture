@@ -356,7 +356,7 @@ def test_zone_check_takes_photo_then_gives_advice_only(zonecam):
     out = agent.handle_zone_check(NOW, rec, process_photo=GOOD, fetch=jpeg_bytes, read_request=lambda: str(NOW_MS - 2000),
                                   push=sent.append, rover=r)
     assert "photo ok" in out and "water 25s" in out and "nothing was started" in out
-    assert rec.calls[0][0] == agent.PHOTO_REQUEST_ZONE and rec.calls[0][3] == {"advice_only": True}      # never waters
+    assert rec.calls[0][0] == agent.PHOTO_REQUEST_ZONE and rec.calls[0][3] == {"advice_only": True, "caveat": None}      # never waters, fresh soil = no caveat
     assert rec.calls[0][1]["soil_moisture_percent"] == 21.0
     assert "ai_photo_status" in sent[0]
 
@@ -369,11 +369,20 @@ def test_zone_check_handles_each_click_once(zonecam):
     assert len(rec.calls) == 1
 
 
-def test_zone_check_without_recent_soil_asks_for_a_measurement(zonecam):
+def test_zone_check_with_old_soil_still_decides_and_says_it_is_an_estimate(zonecam):
     sent, rec = [], AdviceRecorder()
-    old = rover(soil=21.0, soil_ts=NOW_MS - (agent.watering.MAX_READING_AGE_S + 120) * 1000)
+    old = rover(soil=21.0, soil_ts=NOW_MS - 3 * 3600 * 1000)
     out = agent.handle_zone_check(NOW, rec, process_photo=GOOD, fetch=jpeg_bytes, read_request=lambda: str(NOW_MS), push=sent.append, rover=old)
-    assert "Measure soil" in out and rec.calls == [] and "Measure soil" in sent[0]["ai_photo_status"]
+    assert len(rec.calls) == 1 and "advice: water" in out                      # a decision is always made
+    assert rec.calls[0][1]["soil_moisture_percent"] == 21.0
+    assert "ESTIMATE" in rec.calls[0][3]["caveat"] and "3.0 h" in rec.calls[0][3]["caveat"]
+
+
+def test_zone_check_with_no_soil_at_all_still_gets_a_decision(zonecam):
+    rec = AdviceRecorder()
+    out = agent.handle_zone_check(NOW, rec, process_photo=GOOD, fetch=jpeg_bytes, read_request=lambda: str(NOW_MS), push=lambda d: None, rover=rover(soil=None))
+    assert len(rec.calls) == 1 and rec.calls[0][1]["soil_moisture_percent"] is None
+    assert "no soil measurement" in rec.calls[0][3]["caveat"] and "advice:" in out
 
 
 def test_zone_check_old_click_is_ignored(zonecam):
@@ -397,3 +406,24 @@ def test_evaluate_zone_advice_only_never_sends_water(monkeypatch):
                 "rain_detected": False, "reading_ts": time.time()}
     res = rover_routes.evaluate_zone(1, readings, "mango", advice_only=True)
     assert res["auto_water"] is False and res["status"] != "plan_ready"
+
+
+def test_evaluate_zone_advice_only_uses_an_old_soil_value_and_prefixes_the_caveat(monkeypatch):
+    import rover_routes
+    monkeypatch.setattr(rover_routes, "get_weather_forecast", lambda: {"rain_mm": 0.0})
+    monkeypatch.setattr(rover_routes.thingsboard, "configured", lambda: False)
+    pushed = []
+    monkeypatch.setattr(rover_routes.thingsboard, "push_ai_telemetry", pushed.append)
+    monkeypatch.setattr(rover_routes.db, "insert_watering_decision", lambda *a, **k: 1)
+    monkeypatch.setattr(rover_routes.db, "update_watering_decision", lambda *a, **k: None)
+    monkeypatch.setattr(rover_routes.db, "latest_accepted_plant_health", lambda **k: None)
+    monkeypatch.setattr(rover_routes.db, "last_watering_ts", lambda z: None)
+    readings = {"soil_moisture_percent": 8.0, "temperature_c": 30.0, "humidity_percent": 50.0, "light_percent": 60.0,
+                "rain_detected": False, "reading_ts": time.time() - 5 * 3600}          # 5 hours old
+    res = rover_routes.evaluate_zone(1, readings, "mango", advice_only=True, caveat="ESTIMATE: soil value is 5.0 h old")
+    assert res["decision"] == "water" and "too old" not in res["reason"]
+    assert res["reason"].startswith("ESTIMATE: soil value is 5.0 h old")
+    assert pushed and pushed[0]["ai_decision"] == "water" and "ESTIMATE" in pushed[0]["ai_reason"]
+    # the normal (non-advice) path still refuses an old reading
+    res2 = rover_routes.evaluate_zone(1, readings, "mango")
+    assert res2["decision"] == "skip" and "too old" in res2["reason"]
